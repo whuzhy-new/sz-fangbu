@@ -1,0 +1,6 @@
+numpy==2.4.6
+scipy==1.17.1
+shapely==2.2.0
+pyproj==3.7.2
+osmium==4.3.2
+networkx==3.6.1

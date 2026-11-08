@@ -1,0 +1,50 @@
+import { env } from "cloudflare:workers";
+import { createHash } from "node:crypto";
+import { polyline, surfaceDuration, type Coord, type Leg } from "./commute";
+
+type Json = Record<string, any>;
+export class MapApiError extends Error { constructor(message: string, public code = "MAP_ERROR") { super(message); } }
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+export async function amap(service: string, params: Record<string, string | number>, category: "routes" | "search" = "routes"): Promise<{data:Json; createdAt:number; cached:boolean}> {
+  if (!env.AMAP_WEB_KEY) throw new MapApiError("地图服务尚未配置，请稍后重试。", "MISSING_KEY");
+  if (!env.DB) throw new MapApiError("调用预算服务未就绪，已暂停地图请求。", "NO_BUDGET_STORE");
+  const cacheKey = createHash("sha256").update(JSON.stringify([service, Object.entries(params).sort()])).digest("hex");
+  const now = Date.now();
+  const hit = await env.DB.prepare("SELECT payload, created_at FROM api_cache WHERE key=? AND expires_at>?").bind(cacheKey, now).first<{payload:string; created_at:number}>();
+  if (hit) return {data:JSON.parse(hit.payload), createdAt:hit.created_at, cached:true};
+  const month = new Intl.DateTimeFormat("en-CA", { timeZone:"Asia/Shanghai", year:"numeric", month:"2-digit" }).format(now);
+  const bucket = `${month}:${category}`;
+  const limit = Number(category === "search" ? env.AMAP_SEARCH_MONTHLY_LIMIT ?? 3000 : env.AMAP_APP_MONTHLY_LIMIT ?? 100000);
+  if (!Number.isSafeInteger(limit) || limit < 1) throw new MapApiError("免费调用预算未设置，已暂停查询。", "BUDGET_CONFIG");
+  await env.DB.prepare("INSERT INTO api_usage(bucket,count) VALUES(?,0) ON CONFLICT(bucket) DO NOTHING").bind(bucket).run();
+  const reserved = await env.DB.prepare("UPDATE api_usage SET count=count+1 WHERE bucket=? AND count<? RETURNING count").bind(bucket, limit).first<{count:number}>();
+  if (!reserved) throw new MapApiError("本月已达到应用设置的免费调用上限。已有地图仍可浏览，待额度恢复后再核验。", "BUDGET_LIMIT");
+  await env.DB.prepare("INSERT INTO api_usage(bucket,count) VALUES('request-slot',0) ON CONFLICT(bucket) DO NOTHING").run();
+  const slot = await env.DB.prepare("UPDATE api_usage SET count=MAX(count,?)+650 WHERE bucket='request-slot' RETURNING count").bind(now).first<{count:number}>();
+  if (slot) await wait(Math.max(0, slot.count - Date.now()));
+  const search = new URLSearchParams(Object.entries(params).map(([k,v]) => [k,String(v)]));
+  search.set("key", env.AMAP_WEB_KEY);
+  let data:Json;
+  try {
+    const response = await fetch(`https://restapi.amap.com/${service}?${search}`, { signal:AbortSignal.timeout(15000) });
+    if (!response.ok) throw new Error("HTTP error");
+    data = await response.json() as Json;
+  } catch { throw new MapApiError("暂时无法连接高德，当前地点尚未完成核验，请重试。", "NETWORK"); }
+  if (String(data.status) !== "1") {
+    const quota = ["10003","10004","10014","10019","10020","10021","10044","10045"].includes(String(data.infocode));
+    throw new MapApiError(quota ? "高德额度或请求频率受限，请稍后再试。当前地点尚未完成核验。" : `地图暂未返回可用结果（${String(data.infocode)}）。`, String(data.infocode));
+  }
+  const createdAt = Date.now();
+  const ttl = category === "search" ? 30 * 86400000 : 7 * 86400000;
+  await env.DB.prepare("INSERT INTO api_cache(key,payload,created_at,expires_at) VALUES(?,?,?,?) ON CONFLICT(key) DO UPDATE SET payload=excluded.payload,created_at=excluded.created_at,expires_at=excluded.expires_at").bind(cacheKey,JSON.stringify(data),createdAt,createdAt+ttl).run();
+  return {data,createdAt,cached:false};
+}
+
+export async function surfaceLeg(mode: "walking" | "bicycling", origin: Coord, destination: Coord, from:string, to:string): Promise<Leg | null> {
+  const {data,createdAt,cached} = await amap(`v5/direction/${mode}`, { origin:origin.map(x=>x.toFixed(6)).join(","), destination:destination.map(x=>x.toFixed(6)).join(","), show_fields:"cost,polyline,navi" });
+  const path = data.route?.paths?.[0];
+  const duration = surfaceDuration(path);
+  if (duration===null) return null;
+  return {mode,label:mode === "walking" ? "步行" : "自行车",origin,destination,from,to,duration,distance:Number(path.distance),paths:(path.steps ?? []).map((s:Json) => polyline(s.polyline)).filter((p:Coord[])=>p.length>1),instructions:(path.steps??[]).map((s:Json)=>String(s.instruction??"")).filter(Boolean),source:"amap",measuredAt:new Date(createdAt).toISOString(),cached};
+}
