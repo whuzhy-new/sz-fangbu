@@ -21,6 +21,12 @@
   --motion: 160ms ease;
   --ease-out: cubic-bezier(.2,.75,.25,1);
   --font-sans: "PingFang TC", sans-serif;
+  --glass-surface: rgb(248 253 250 / .76);
+  --glass-modal: rgb(249 253 251 / .86);
+  --glass-control: rgb(255 255 255 / .52);
+  --glass-highlight: rgb(255 255 255 / .85);
+  --glass-edge: rgb(255 255 255 / .62);
+  --glass-shadow: 0 16px 48px #193d2d13, 0 3px 12px #193d2d08, inset 0 1px 0 #ffffffed, inset 1px 0 0 #ffffff70, inset 0 -1px 0 #ffffff50;
 }
 
 * { box-sizing: border-box; }
@@ -378,4 +384,64 @@ input, select { min-width: 0; }
 .confirm-pick-button:disabled { background: var(--soft); color: var(--muted); opacity: 1; }
 @media (max-width: 700px) {
   .map-pick-confirm { width: min(248px, calc(100vw - 32px)); }
+}
+
+/* A shared glass material for floating surfaces; content and QR codes stay sharp. */
+@supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root { --muted: #425148; }
+  .side-panel, .info-modal, .map-tools, .map-pick-confirm, .mobile-toggle {
+    background-color: var(--glass-surface);
+    background-image: radial-gradient(ellipse at 0 0, #ffffff80, transparent 65%), linear-gradient(140deg, #ffffff30, #ffffff00 48%, #ffffff24);
+    border: 1px solid var(--glass-edge);
+    -webkit-backdrop-filter: blur(22px) saturate(145%) brightness(1.04);
+    backdrop-filter: blur(22px) saturate(145%) brightness(1.04);
+    box-shadow: var(--glass-shadow);
+  }
+  .side-panel { border-radius: 24px; }
+  .info-modal {
+    background-color: var(--glass-modal);
+    border-radius: 28px;
+    box-shadow: 0 28px 90px #17352a28, 0 6px 20px #17352a12, inset 0 1px 0 #fffffff2, inset 1px 0 0 #ffffff85, inset 0 -1px 0 #ffffff70;
+  }
+  .info-modal::backdrop { background: #24453926; -webkit-backdrop-filter: blur(5px); backdrop-filter: blur(5px); }
+  .rules-header, .review-header {
+    background: linear-gradient(180deg, rgb(250 254 252 / .8), rgb(250 254 252 / .58));
+    -webkit-backdrop-filter: blur(16px) saturate(135%);
+    backdrop-filter: blur(16px) saturate(135%);
+  }
+  .office-choice, .search-input {
+    background: var(--glass-control);
+    box-shadow: inset 0 1px 0 var(--glass-highlight), inset 0 0 0 1px #ffffff60;
+  }
+  .office-choice:hover, .search-input.focused { background: #ffffffb8; }
+  .office-choice:has(input:checked) { background: color-mix(in srgb, var(--walking-soft) 82%, transparent); }
+  .search-input.focused { box-shadow: inset 0 1px 0 #ffffffd9, 0 0 0 2px #2f725d35; }
+  .layer-chip, .rules-limit {
+    box-shadow: inset 0 1px 0 #ffffffd9, inset 0 0 0 1px #ffffff70, 0 2px 6px #203c2c03;
+  }
+  .layer-chip.walking:has(input:checked), .rules-limit.walking { background: color-mix(in srgb, var(--walking-soft) 82%, transparent); }
+  .layer-chip.bicycling:has(input:checked), .rules-limit.bicycling { background: color-mix(in srgb, var(--bicycling-soft) 82%, transparent); }
+  .layer-chip.metro:has(input:checked), .rules-limit.metro { background: color-mix(in srgb, var(--metro-soft) 82%, transparent); }
+  .rules-calculation, .rules-details > div, .review-qr-card {
+    background: rgb(255 255 255 / .36);
+    box-shadow: inset 0 1px 0 #ffffffc4, inset 0 0 0 1px #ffffff45;
+  }
+  .rules-formula > span { background: #ffffff91; box-shadow: inset 0 1px 0 #ffffffd9; }
+  .rules-formula > span:nth-of-type(2) { background: color-mix(in srgb, var(--metro-soft) 82%, transparent); }
+  .route-card.active { background: #ffffff38; }
+  .route-card-main:hover, .route-card-main[aria-pressed="true"], .route-card.active > .route-card-main { background: #ffffff80; }
+  .route-card.active .calculation { background: #ffffff85; }
+  .map-pick-confirm::after { background: rgb(248 253 250 / .9); box-shadow: 1px 1px 0 #ffffff85; }
+  .office-map-label { background: rgb(252 255 253 / .86); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); box-shadow: 0 3px 12px #233e2f0e, inset 0 1px 0 #ffffffc9; }
+}
+
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  :root { --glass-surface: #f7fbf8; --glass-modal: #fbfdfc; --glass-control: #fff; --glass-edge: #d9e4dd; }
+  .side-panel, .info-modal, .map-tools, .map-pick-confirm, .mobile-toggle, .rules-header, .review-header, .office-map-label {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background-image: none;
+  }
+  .rules-header, .review-header, .office-map-label, .map-pick-confirm::after { background: var(--glass-modal); }
+  .info-modal::backdrop { -webkit-backdrop-filter: none; backdrop-filter: none; background: #18352b66; }
 }
