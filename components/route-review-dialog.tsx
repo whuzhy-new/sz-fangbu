@@ -40,6 +40,7 @@ export default function RouteReviewDialog({plan,onClose}:{plan:Plan|null;onClose
           {route.url?<a className="review-qr-image" href={route.url} target="_blank" rel="noreferrer" aria-label={`在高德打开${route.label}：${route.leg.from}到${route.leg.to}`}><QRCodeSVG value={route.url} size={216} level="M" marginSize={4} title={`${route.label}：${route.leg.from}到${route.leg.to}`} role="img"/></a>:<p className="review-qr-note">缺少车站信息，请在高德地铁图中选择下方两站。</p>}
           <p className="review-qr-endpoints"><span>{route.leg.from}</span><ArrowRight size={12} aria-hidden="true"/><span>{route.leg.to}</span></p>
           {route.id==="metro"&&route.url&&<p className="review-qr-note">若仍出现两端步行，请在高德地铁图中选择这两站核验。</p>}
+          {route.leg.mode==="metro"&&route.url&&<p className="review-qr-note">若耗时与本页不一致，请在高德中将出发时间改为次日早上9:00，再核对路线。</p>}
         </section>)}
       </div>
     </div>

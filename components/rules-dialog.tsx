@@ -59,7 +59,7 @@ export default function RulesDialog({open,onClose,coverage,rail,validation}:{ope
           <p>范围内的小空洞会作显示补全，部分小区按入口核验后修正。边界经过平滑处理，不代表每个地点都已通过路线核验。</p>
           {validation&&<p>抽样平均误差：步行约{Math.round((validation.summary.walking?.meanAbsoluteErrorSeconds??0)/6)/10}分钟，骑行约{Math.round((validation.summary.bicycling?.meanAbsoluteErrorSeconds??0)/6)/10}分钟。这是样本平均值，不是所有地点的最大误差。</p>}
           <p>分段会比较已准备的站口组合，再用高德查询部分候选；本地估算不作为符合条件的依据，也无法穷举所有可行路线。</p>
-          <p>地铁参考出发时间为2026年11月9日09:00。复核时请设置同一时间。</p>
+          <p>地铁参考出发时间为2026年11月9日09:00。若手机端耗时与本页不一致，请在高德中将出发时间改为次日早上9:00，再核对路线。</p>
         </div>
       </details>
       <footer className="info-sources"><span>范围更新：{updated}{rail?` · ${rail.processedStations.length}个车站`:""}</span><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors / ODbL</a></footer>
