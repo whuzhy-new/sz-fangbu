@@ -16,7 +16,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" data-app-release="mobile-unified-v2">
       <body className="antialiased">{children}</body>
     </html>
   );
