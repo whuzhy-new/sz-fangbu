@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {qualified,roundDuration,roundLeg,sumLegDurations,formatDuration,surfaceDuration,polyline,withinShenzhen,mapLink} from '../lib/commute.ts';
+import {qualified,roundDuration,roundLeg,sumLegDurations,formatDuration,surfaceDuration,polyline,withinShenzhen,mapLink,placePoiId} from '../lib/commute.ts';
 import {fullMetroLeg} from '../lib/full-metro.ts';
 
 test('policy thresholds use whole minutes with a 30-second rounding boundary',()=>{
@@ -14,7 +14,7 @@ test('policy thresholds use whole minutes with a 30-second rounding boundary',()
   for(const n of [-1,NaN,Infinity])assert.equal(qualified(n,'walking'),false);
 });
 test('round each segment before summing; presentation and qualification use the same minutes',()=>{
-  for(const [seconds,minutes] of [[0,1],[1,1],[29,1],[30,1],[89,1],[90,2],[18*60+29,18],[18*60+30,19],[18*60+31,19]]){
+  for(const [seconds,minutes] of [[0,1],[1,1],[19,1],[20,1],[29,1],[30,1],[79,1],[80,1],[89,1],[90,2],[18*60+19,18],[18*60+20,18],[18*60+29,18],[18*60+30,19],[18*60+31,19]]){
     assert.equal(roundDuration(seconds),minutes*60);
     assert.equal(formatDuration(seconds),`${minutes}分`);
   }
@@ -22,6 +22,7 @@ test('round each segment before summing; presentation and qualification use the 
   const down=[{duration:629},{duration:629}];
   assert.equal(sumLegDurations(down),1200);
   assert.equal(roundDuration(down.reduce((sum,l)=>sum+l.duration,0)),1260);
+  assert.equal(sumLegDurations([{duration:240,rawDuration:203}]),180);
   const up=[{duration:570},{duration:570}];
   assert.equal(sumLegDurations(up),1200);
   assert.equal(roundDuration(1140),1140);
@@ -50,16 +51,31 @@ test('verify bounds reject invalid input and map link encodes names',()=>{
   assert.equal(withinShenzhen([113.94,22.52]),true);
   assert.equal(withinShenzhen([NaN,22.52]),false);
   assert.equal(withinShenzhen([116.4,39.9]),false);
-  const url=new URL(mapLink({mode:'walking',from:'小区&A',to:'工区',origin:[113.94,22.52],destination:[113.95,22.52],label:'步行',duration:10,distance:10,paths:[],source:'amap'}));
-  assert.equal(url.searchParams.get('mode'),'walk');
-  assert.equal(url.searchParams.get('from'),'113.94,22.52,小区&A');
-  const rail=new URL(mapLink({mode:'metro',from:'南油站',to:'粤海门站',origin:[113.925797,22.510346],destination:[113.945531,22.532695],label:'地铁9号线',duration:600,distance:3500,paths:[],source:'amap'}));
-  assert.equal(rail.searchParams.get('from'),'113.925797,22.510346,南油(地铁站)');
-  assert.equal(rail.searchParams.get('to'),'113.945531,22.532695,粤海门(地铁站)');
-  assert.equal(rail.searchParams.get('mode'),'bus');
-  const full=new URL(mapLink({mode:'metro',kind:'full-transit',from:'蔚蓝海岸',to:'深圳湾创新科技中心',origin:[113.94,22.52],destination:[113.95,22.52],label:'地铁完整方案',duration:1100,distance:3000,paths:[],source:'amap'}));
-  assert.equal(full.searchParams.get('from'),'113.94,22.52,蔚蓝海岸');
-  assert.equal(full.searchParams.get('to'),'113.95,22.52,深圳湾创新科技中心');
+  const url=new URL(mapLink({mode:'walking',from:'小区&A',to:'工区',origin:[113.94,22.52],destination:[113.95,22.52],label:'步行',duration:10,distance:10,paths:[],source:'amap'})!);
+  assert.equal(url.protocol,'iosamap:');
+  assert.equal(url.searchParams.get('t'),'2');
+  assert.equal(url.searchParams.get('sname'),'小区&A');
+  assert.equal(url.searchParams.get('slon'),'113.94');
+  assert.equal(url.searchParams.get('slat'),'22.52');
+  const rail=new URL(mapLink({mode:'metro',from:'南油站',to:'粤海门站',originPoiId:'nanyou',destinationPoiId:'yuehaimen',origin:[113.925797,22.510346],destination:[113.945531,22.532695],label:'地铁9号线',duration:600,distance:3500,paths:[],source:'amap'})!);
+  assert.equal(rail.protocol,'iosamap:');
+  assert.equal(rail.searchParams.get('sid'),'nanyou');
+  assert.equal(rail.searchParams.get('did'),'yuehaimen');
+  assert.equal(rail.searchParams.get('sname'),'南油(地铁站)');
+  assert.equal(rail.searchParams.get('dname'),'粤海门(地铁站)');
+  assert.equal(rail.searchParams.get('t'),'1');
+  const full=new URL(mapLink({mode:'metro',kind:'full-transit',from:'蔚蓝海岸',to:'深圳湾创新科技中心',origin:[113.94,22.52],destination:[113.95,22.52],label:'地铁完整方案',duration:1100,distance:3000,paths:[],source:'amap'})!);
+  assert.equal(full.searchParams.get('sname'),'蔚蓝海岸');
+  assert.equal(full.searchParams.get('dname'),'深圳湾创新科技中心');
+});
+
+test('known places keep POI identity, while moved or anonymous map points use their coordinates',()=>{
+  const base={id:'B0HOME0001',name:'小区',address:'',location:[113.94,22.52] as [number,number]};
+  assert.equal(placePoiId(base),'B0HOME0001'); // Also supports existing search history.
+  assert.equal(placePoiId({...base,id:'map-point',kind:'map',poiId:'B0HOME0001'}),'B0HOME0001');
+  assert.equal(placePoiId({...base,kind:'map'}),undefined); // A retained label is not POI identity.
+  assert.equal(placePoiId({...base,id:'map-point',kind:'map'}),undefined);
+  assert.equal(placePoiId({...base,id:'address-0',kind:'address'}),undefined);
 });
 
 test('full metro keeps complete API time including access, transfers and waiting',()=>{

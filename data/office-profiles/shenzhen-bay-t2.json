@@ -1,0 +1,15 @@
+{
+  "id": "innovation",
+  "name": "深圳湾创新科技中心 T2 栋",
+  "area": "科苑 · 科技园",
+  "color": "#317b68",
+  "poiId": "B0H055I82U",
+  "parentPoiId": "B0FFJRRCN2",
+  "location": [113.947074, 22.529024],
+  "entrance": [113.947074, 22.529024],
+  "walkingIdentity": "poi",
+  "address": "深圳湾创新科技中心T2栋（高新南环路）",
+  "source": "https://www.amap.com/place/B0H055I82U",
+  "mapSource": "高德 T2 栋地点，步行 API 与二维码使用相同 POI ID",
+  "endpointNote": "以 T2 栋地点测量；步行路线使用地点 ID 解析入口，不沿用园区 entr_location。"
+}

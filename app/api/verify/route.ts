@@ -4,23 +4,34 @@ import stationData from "@/public/data/stations.json";
 import {VERIFY_TIMEOUT_MS,rankAccessCandidates} from "@/lib/segmented-search";
 import {localAccessTimes} from "@/lib/local-access-server";
 import {surfaceLeg,fullMetro,METRO_DEPARTURE,MapApiError} from "@/lib/amap-server";
-import {distanceMeters,qualified,roundLeg,sumLegDurations,withinShenzhen,type Coord,type Leg,type Plan,type QueryStage,type Verification} from "@/lib/commute";
+import {DURATION_ROUNDING_VERSION,amapPoiId,distanceMeters,qualified,roundLeg,sumLegDurations,withinShenzhen,type Coord,type Leg,type Plan,type QueryStage,type Verification} from "@/lib/commute";
 
 type Prepared={id:string;stationId:string;stationName:string;officeId:string;duration:number;legs:Leg[];measuredAt:string;originalTotalDuration?:number|null;metroApi?:{originName:string;destinationName:string};originalReferenceScope?:string};
 type Entry={id:string;name:string;location:Coord;source:string};
-type Index={methodVersion?:string;complete:boolean;plans:Record<string,Record<string,Prepared>>;entries:Record<string,Entry[]>};
+type Index={methodVersion?:string;durationRounding?:string;complete:boolean;plans:Record<string,Record<string,Prepared>>;entries:Record<string,Entry[]>};
 const prepared=metro as unknown as Index;
-const preparedReady=prepared.complete&&prepared.methodVersion==="amap-station-pair-v3";
+// The original 30-second snapshots predate this metadata field.
+const preparedRounding=prepared.durationRounding??"per-leg-minute-half-up-min-one-v2";
+const preparedReady=prepared.complete&&prepared.methodVersion==="amap-station-pair-v3"&&preparedRounding===DURATION_ROUNDING_VERSION;
 const preparedCandidates=(officeId:string,origin:Coord)=>Object.values(preparedReady?prepared.plans[officeId]??{}:{})
+  .filter(plan=>{
+    const office=offices.find(o=>o.id===officeId),tail=plan.legs.at(-1);
+    return office&&tail&&tail.destination.length===2&&tail.destination.every((value,index)=>value===office.entrance[index])
+      &&(!tail.destinationPoiId||tail.destinationPoiId===office.poiId)
+      &&(!("walkingIdentity" in office&&office.walkingIdentity==="poi"&&tail.mode==="walking")||tail.routingIdentity==="poi");
+  })
   .filter(plan=>plan.metroApi?.originName===plan.stationName&&plan.legs.find(l=>l.mode==="metro")?.from===plan.stationName+"站"&&plan.legs.filter(l=>l.mode==="metro").at(-1)?.to===plan.metroApi.destinationName+"站")
   .map(plan=>({...plan,legs:plan.legs.map(roundLeg),duration:sumLegDurations(plan.legs)}))
   .flatMap(plan=>(prepared.entries[plan.stationId]??[]).filter(entry=>entry.source==="amap").map(entry=>({plan,entry,distance:distanceMeters(origin,entry.location)})));
 const coordinateKey=(location:Coord)=>location.map(n=>n.toFixed(6)).join(",");
+const entranceKey=(name:string,location:Coord)=>`${name}:${coordinateKey(location)}`;
+const entrances=new Map(Object.values(prepared.entries).flat().filter(entry=>entry.source==="amap").map(entry=>[entranceKey(entry.name,entry.location),entry]));
 
 export async function POST(request:Request) {
-  let input:{location:Coord;name:string;officeIds:string[]};
+  let input:{location:Coord;name:string;officeIds:string[];poiId?:string};
   try{input=await request.json();}catch{return Response.json({error:"地址格式有误。"},{status:400});}
   if(!input||typeof input!=="object"||!Array.isArray(input.location)||!withinShenzhen(input.location)||typeof input.name!=="string"||input.name.length>120||!Array.isArray(input.officeIds)||input.officeIds.length>3||!input.officeIds.length||input.officeIds.some(id=>!offices.some(o=>o.id===id)))return Response.json({error:"请选择深圳范围内的位置和有效工区。"},{status:400});
+  const originPoiId=amapPoiId(input.poiId);
   const encoder=new TextEncoder();
   const apiSignal=AbortSignal.any([request.signal,AbortSignal.timeout(VERIFY_TIMEOUT_MS)]);
   const apiOptions={signal:apiSignal};
@@ -47,7 +58,7 @@ export async function POST(request:Request) {
             if(stopped()||apiSignal.aborted)return;
             try{
               result.checked++;
-              const raw=await surfaceLeg(mode,input.location,office.entrance as Coord,input.name,office.name,apiOptions);
+              const raw=await surfaceLeg(mode,input.location,office.entrance as Coord,input.name,office.name,{...apiOptions,originPoiId,destinationPoiId:office.poiId});
               if(raw){
                 const leg=roundLeg(raw);
                 const plan:Plan={id:`${office.id}-${mode}`,officeId:office.id,mode,title:mode==="walking"?"全程步行":"全程自行车",duration:leg.duration,limit:mode==="walking"?1800:1200,qualified:qualified(leg.duration,mode),legs:[leg],measuredAt:leg.measuredAt??new Date().toISOString(),source:"amap"};
@@ -72,7 +83,7 @@ export async function POST(request:Request) {
           let fullMetroQualified=false;
           if(!surfaceQualified&&!stopped()&&!apiSignal.aborted)try{
             stage("metro-full");result.checked++;
-            const raw=await fullMetro(input.location,office.entrance as Coord,input.name,office.name,apiOptions);
+            const raw=await fullMetro(input.location,office.entrance as Coord,input.name,office.name,{...apiOptions,originPoiId,destinationPoiId:office.poiId});
             if(raw){
               const leg=roundLeg(raw);fullMetroQualified=qualified(leg.duration,"metro");
               const plan:Plan={id:`${office.id}-metro-full`,officeId:office.id,mode:"metro",metroMethod:"full",title:"地铁完整方案",duration:leg.duration,limit:1200,qualified:fullMetroQualified,legs:[leg],measuredAt:leg.measuredAt!,source:"amap",note:`高德总时长，含步行、换乘及接口计入的候车。查询时刻：${METRO_DEPARTURE.label}。`};
@@ -87,14 +98,20 @@ export async function POST(request:Request) {
               if(stopped()||apiSignal.aborted)break;
               try{
                 result.checked++;
-                const raw=await surfaceLeg(mode,input.location,candidate.entry.location,input.name,candidate.entry.name,apiOptions);
+                const raw=await surfaceLeg(mode,input.location,candidate.entry.location,input.name,candidate.entry.name,{...apiOptions,originPoiId,destinationPoiId:candidate.entry.id});
                 if(!raw)continue;
                 const first=roundLeg(raw),duration=first.duration+candidate.plan.duration;
-                const legs=[first,...candidate.plan.legs.map(leg=>{
-                  if(leg.mode!=="metro")return leg;
+                const legs=[first,...candidate.plan.legs.map((leg,index)=>{
+                  if(leg.mode!=="metro"){
+                    if(index!==candidate.plan.legs.length-1||leg.kind==="transfer")return leg;
+                    const gate=entrances.get(entranceKey(leg.from,leg.origin));
+                    // Only retain IDs that were actually sent to the surface API.
+                    return leg.routingIdentity==="poi"?{...leg,originPoiId:gate?.id,destinationPoiId:office.poiId}:leg;
+                  }
                   const pair=leg.instructions?.[0]?.split("：")[1]?.split(" → ");
-                  const a=stationData.stations.find(s=>s.name===pair?.[0]),b=stationData.stations.find(s=>s.name===pair?.[1]);
-                  return {...leg,from:a?a.name+"站":leg.from,to:b?b.name+"站":leg.to,origin:a?a.location as Coord:leg.origin,destination:b?b.location as Coord:leg.destination};
+                  const a=stationData.stations.find(s=>s.name===(pair?.[0]??leg.from.replace(/站$/,""))),b=stationData.stations.find(s=>s.name===(pair?.[1]??leg.to.replace(/站$/,"")));
+                  return {...leg,from:a?a.name+"站":leg.from,to:b?b.name+"站":leg.to,origin:a?a.location as Coord:leg.origin,destination:b?b.location as Coord:leg.destination,
+                    originPoiId:a?.id,destinationPoiId:b?.id};
                 })];
                 const plan:Plan={id:candidate.plan.id,officeId:office.id,mode:"metro",metroMethod:"segmented",title:`经${candidate.plan.stationName}站`,duration,limit:1200,qualified:qualified(duration,"metro"),legs,measuredAt:candidate.plan.measuredAt,source:"amap",note:`地铁参考时刻：${METRO_DEPARTURE.label}。`};
                 const existing=result.plans.findIndex(p=>p.id===plan.id);

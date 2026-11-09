@@ -1,4 +1,5 @@
 import type {Coord,Mode} from "./commute";
+import {DURATION_ROUNDING_VERSION} from "./commute.ts";
 import type {Coverage,CoverageGeometry} from "./map-types";
 
 export type CoverageAssessment={status:"inside"|"edge"|"outside"|"unavailable";modes:Mode[]};
@@ -11,6 +12,7 @@ const modes:Mode[]=["walking","bicycling","metro"];
 // Use the same source features for drawing and point checks. Layer visibility
 // and visual feathering do not change the underlying eligibility estimate.
 export function coverageFeatures(coverage:Coverage|null):Coverage["features"] {
+  if(coverage?.metadata.durationRounding!==DURATION_ROUNDING_VERSION)return [];
   return (coverage?.features??[]).filter(feature=>modes.includes(feature.properties.mode)&&
     (feature.geometry.type==="Polygon"||feature.geometry.type==="MultiPolygon")&&
     (feature.properties.mode!=="metro"||coverage?.metadata.methodVersion==="amap-station-pair-v3"));

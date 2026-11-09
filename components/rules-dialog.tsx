@@ -48,7 +48,7 @@ export default function RulesDialog({open,onClose,coverage,rail,validation}:{ope
         <h3>申请前核对</h3>
         <ul className="application-notes">
           <li>测距起终点为小区门口与实际办公地点，注意核对入口。</li>
-          <li>点击“高德复核”，用手机扫码查看路线并截图；分段需保留各段截图。</li>
+          <li>点击“上高德看路线”，用手机扫码查看路线并截图；分段需保留各段截图。</li>
         </ul>
         <p>仅限步行、普通自行车和地铁，公交、电瓶车、电动车、摩托车不计入。最终以公司要求的测距页面、截图和租住记录为准。</p>
       </section>
@@ -58,7 +58,7 @@ export default function RulesDialog({open,onClose,coverage,rail,validation}:{ope
           <p>地图与路线来自高德。范围结合高德固定地铁段与经校准的 OpenStreetMap 路网，按{coverage?.metadata.resolutionMeters??50}米网格预先计算。</p>
           <p>范围内的小空洞会作显示补全，部分小区按入口核验后修正。边界经过平滑处理，不代表每个地点都已通过路线核验。</p>
           {validation&&<p>抽样平均误差：步行约{Math.round((validation.summary.walking?.meanAbsoluteErrorSeconds??0)/6)/10}分钟，骑行约{Math.round((validation.summary.bicycling?.meanAbsoluteErrorSeconds??0)/6)/10}分钟。这是样本平均值，不是所有地点的最大误差。</p>}
-          <p>分段会比较已准备的站口组合，再用高德复核部分候选；本地估算不作为符合条件的依据，也无法穷举所有可行路线。</p>
+          <p>分段会比较已准备的站口组合，再用高德查询部分候选；本地估算不作为符合条件的依据，也无法穷举所有可行路线。</p>
           <p>地铁参考出发时间为2026年11月9日09:00。复核时请设置同一时间。</p>
         </div>
       </details>

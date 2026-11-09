@@ -12,7 +12,7 @@ function RouteSource({plan,onReview}:{plan:Plan;onReview:()=>void}) {
   const [open,setOpen]=useState(false);
   return <div className="route-source">
     <div className="route-detail-actions">
-      <button className="route-review-button" aria-haspopup="dialog" aria-controls="route-review-dialog" onClick={onReview}><QrCode size={15} aria-hidden="true"/>高德复核</button>
+      <button className="route-review-button" aria-haspopup="dialog" aria-controls="route-review-dialog" onClick={onReview}><QrCode size={15} aria-hidden="true"/>上高德看路线</button>
       <button className="route-source-toggle" aria-expanded={open} aria-controls={`source-${plan.id}`} onClick={()=>setOpen(value=>!value)}>数据与计算口径<ChevronDown size={13} className={open?"rotated":""} aria-hidden="true"/></button>
     </div>
     <AnimatedCollapse open={open} id={`source-${plan.id}`}>
@@ -47,12 +47,15 @@ export default function RouteResults({result,plans,selectedPlan,loading,querySta
         const open=expandable&&selected;
         const detailsId=`route-${plan.id}`;
         return <article className={`route-card ${open?"active":""} ${!plan.qualified?"is-over-limit":""}`} key={plan.id}>
+          <div className={`route-card-heading ${!expandable?"surface-route":""}`}>
           <button className="route-card-main" aria-expanded={expandable?open:undefined} aria-controls={expandable?detailsId:undefined} aria-pressed={!expandable?selected:undefined} onClick={()=>onSelect(plan)}>
             <span className={`mode-badge ${plan.mode}`}><ModeIcon mode={plan.mode}/></span>
             <span className="route-card-title"><strong>{plan.title}</strong>{!plan.qualified&&<small>超出 {formatDuration(plan.duration-plan.limit)}</small>}</span>
             <span className="route-card-time"><strong>{formatDuration(plan.duration)}</strong>{plan.qualified&&<Check size={14} aria-label="符合房补条件"/>}</span>
             {expandable&&<ChevronDown size={16} className={open?"rotated":""} aria-hidden="true"/>}
           </button>
+          {!expandable&&<button className="route-review-icon" aria-label={`上高德看路线：${plan.title}`} title="上高德看路线" aria-haspopup="dialog" aria-controls="route-review-dialog" onClick={()=>setReviewPlan(plan)}><QrCode size={17} aria-hidden="true"/></button>}
+          </div>
           {expandable&&<AnimatedCollapse open={open} id={detailsId}>
           <div className="route-details">
             <ol className="route-timeline">

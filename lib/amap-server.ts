@@ -2,12 +2,14 @@ import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { polyline, surfaceDuration, type Coord, type Leg } from "./commute";
 import { fullMetroLeg } from "./full-metro";
+import {surfaceRouteParams,transitRouteParams} from "./amap-route-params";
 
 export const METRO_DEPARTURE = {date:"2026-11-09",time:"09-00",label:"2026-11-09 09:00"};
 
 type Json = Record<string, any>;
 export class MapApiError extends Error { constructor(message: string, public code = "MAP_ERROR") { super(message); } }
 type RequestOptions={signal?:AbortSignal};
+type RouteRequestOptions=RequestOptions&{originPoiId?:string;destinationPoiId?:string};
 const timeoutError=()=>new MapApiError("高德核验超时，已有结果已保留。", "TIME_BUDGET");
 const wait = (ms:number,signal?:AbortSignal) => new Promise<void>((resolve,reject)=>{
   if(signal?.aborted){reject(timeoutError());return;}
@@ -53,20 +55,22 @@ export async function amap(service: string, params: Record<string, string | numb
   return {data,createdAt,cached:false};
 }
 
-export async function surfaceLeg(mode: "walking" | "bicycling", origin: Coord, destination: Coord, from:string, to:string,options:RequestOptions={}): Promise<Leg | null> {
-  const {data,createdAt,cached} = await amap(`v5/direction/${mode}`, { origin:origin.map(x=>x.toFixed(6)).join(","), destination:destination.map(x=>x.toFixed(6)).join(","), show_fields:"cost,polyline,navi" },"routes",options);
+export async function surfaceLeg(mode: "walking" | "bicycling", origin: Coord, destination: Coord, from:string, to:string,options:RouteRequestOptions={}): Promise<Leg | null> {
+  const identity=surfaceRouteParams(mode,origin,destination,options);
+  const {data,createdAt,cached} = await amap(`v5/direction/${mode}`,identity.params,"routes",options);
   const path = data.route?.paths?.[0];
   const duration = surfaceDuration(path);
   if (duration===null) return null;
-  return {mode,label:mode === "walking" ? "步行" : "自行车",origin,destination,from,to,duration,distance:Number(path.distance),paths:(path.steps ?? []).map((s:Json) => polyline(s.polyline)).filter((p:Coord[])=>p.length>1),instructions:(path.steps??[]).map((s:Json)=>String(s.instruction??"")).filter(Boolean),source:"amap",measuredAt:new Date(createdAt).toISOString(),cached};
+  return {mode,label:mode === "walking" ? "步行" : "自行车",origin,destination,from,to,...identity.endpoints,duration,distance:Number(path.distance),paths:(path.steps ?? []).map((s:Json) => polyline(s.polyline)).filter((p:Coord[])=>p.length>1),instructions:(path.steps??[]).map((s:Json)=>String(s.instruction??"")).filter(Boolean),source:"amap",measuredAt:new Date(createdAt).toISOString(),cached};
 }
 
-export async function fullMetro(origin:Coord,destination:Coord,from:string,to:string,options:RequestOptions={}):Promise<Leg|null> {
+export async function fullMetro(origin:Coord,destination:Coord,from:string,to:string,options:RouteRequestOptions={}):Promise<Leg|null> {
+  const identity=transitRouteParams(origin,destination,options);
   const {data,createdAt,cached}=await amap("v5/direction/transit/integrated",{
-    origin:origin.map(x=>x.toFixed(6)).join(","),destination:destination.map(x=>x.toFixed(6)).join(","),
+    ...identity.params,
     city1:"0755",city2:"0755",strategy:7,AlternativeRoute:10,
     date:METRO_DEPARTURE.date,time:METRO_DEPARTURE.time,show_fields:"cost,polyline,navi",
   },"routes",options);
   const leg=fullMetroLeg(data,origin,destination,from,to);
-  return leg?{...leg,measuredAt:new Date(createdAt).toISOString(),cached}:null;
+  return leg?{...leg,...identity.endpoints,measuredAt:new Date(createdAt).toISOString(),cached}:null;
 }

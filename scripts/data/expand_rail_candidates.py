@@ -7,7 +7,7 @@ import argparse
 import copy
 import json
 
-from amap import ROOT, WORK, atomic_json, cached_response, request
+from amap import ROOT, WORK, atomic_json, cached_response, request, surface_params
 from cached_rail_graph import CachedRailGraph
 from duration_policy import round_seconds,sum_leg_seconds,plan_seconds
 from prepare_rail_plans import full_params, station_params, surface
@@ -22,9 +22,9 @@ def tail_leg(office, station, entries, cache_only):
         if gate['source'] != 'amap':
             continue
         for mode in ['walking', 'bicycling']:
-            params = {'origin': ','.join(f'{x:.6f}' for x in gate['location']),
-                      'destination': ','.join(f'{x:.6f}' for x in office['entrance']),
-                      'show_fields': 'cost,polyline,navi'}
+            use_poi = office.get('walkingIdentity') == 'poi'
+            params = surface_params(mode, gate['location'], office['entrance'],
+                                    gate['id'] if use_poi else None, office['poiId'] if use_poi else None)
             data = cached_response('v5/direction/' + mode, params)
             if data is None and not cache_only:
                 data = request('v5/direction/' + mode, params)
@@ -38,7 +38,10 @@ def tail_leg(office, station, entries, cache_only):
             duration = float(raw)
             if duration <= 0 or (best and best['duration'] <= duration):
                 continue
-            route = {'duration': duration, 'distance': float(path['distance']), 'steps': path.get('steps', [])}
+            route = {'duration': duration, 'distance': float(path['distance']), 'steps': path.get('steps', []),
+                     'routingIdentity': 'poi' if params.get('origin_id') or params.get('destination_id') else 'coordinates',
+                     **({'originPoiId': params['origin_id']} if 'origin_id' in params else {}),
+                     **({'destinationPoiId': params['destination_id']} if 'destination_id' in params else {})}
             best = surface(route, mode, gate['location'], office['entrance'], gate['name'], office['name'])
     return best
 

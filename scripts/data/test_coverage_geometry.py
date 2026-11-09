@@ -7,8 +7,9 @@ from duration_policy import round_seconds,sum_leg_seconds
 
 class CoverageGeometryTests(unittest.TestCase):
     def test_minute_clock_matches_runtime_boundaries(self):
-        for value,expected in [(0,60),(1,60),(29,60),(30,60),(89,60),(90,120),(1111,1140),(1229.999,1200),(1230,1260)]:
+        for value,expected in [(0,60),(1,60),(19,60),(20,60),(29,60),(30,60),(79,60),(80,60),(89,60),(90,120),(1111,1140),(1229.999,1200),(1230,1260)]:
             self.assertEqual(round_seconds(value),expected)
+        self.assertEqual(sum_leg_seconds([{'duration':619},{'duration':619}]),1200)
         self.assertEqual(sum_leg_seconds([{'duration':629},{'duration':629}]),1200)
         self.assertEqual(sum_leg_seconds([{'duration':0},{'duration':29}]),120)
         for value in [-1,math.inf,math.nan]:self.assertEqual(round_seconds(value),math.inf)

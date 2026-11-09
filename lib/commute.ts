@@ -3,8 +3,8 @@ export type Mode = "walking" | "bicycling" | "metro";
 export type QueryStage = "surface" | "metro-full" | "metro-segmented";
 export const QUERY_STAGE_LABEL: Record<QueryStage,string> = {surface:"步行、自行车","metro-full":"地铁不分段","metro-segmented":"地铁分段"};
 export type Office = { id: string; name: string; area: string; color: string; poiId: string; location: number[]; entrance: number[]; address: string; source: string };
-export type Place = { id: string; name: string; address: string; location: Coord; entrance?: Coord; kind?: string };
-export type Leg = { mode: Mode; label: string; from: string; to: string; origin: Coord; destination: Coord; duration: number; rawDuration?:number; distance: number; paths: Coord[][]; instructions?: string[]; source: "amap" | "model"; measuredAt?:string; cached?:boolean; kind?:"transfer" | "full-transit" };
+export type Place = { id: string; name: string; address: string; location: Coord; entrance?: Coord; kind?: string; poiId?:string };
+export type Leg = { mode: Mode; label: string; from: string; to: string; origin: Coord; destination: Coord; originPoiId?:string; destinationPoiId?:string; routingIdentity?:"coordinates"|"poi"; duration: number; rawDuration?:number; distance: number; paths: Coord[][]; instructions?: string[]; source: "amap" | "model"; measuredAt?:string; cached?:boolean; kind?:"transfer" | "full-transit" };
 export type Plan = { id: string; officeId: string; mode: Mode; title: string; duration: number; limit: number; qualified: boolean; legs: Leg[]; measuredAt: string; source: "amap" | "model"; note?: string; originalReferenceDuration?:number|null; originalReferenceScope?:string; metroMethod?:"full" | "segmented" };
 export type LocalSearch={total:number;reachable:number;withinLimit:number;bestDuration:number|null;elapsedMs:number;source:"model"};
 export type Verification = { officeId: string; plans: Plan[]; complete: boolean; checked: number; errors: string[]; measuredAt: string; localSearch?:LocalSearch; };
@@ -13,15 +13,17 @@ export const MODE_COLOR: Record<Mode, string> = { walking: "#41896e", bicycling:
 export const LIMITS: Record<Mode, number> = { walking: 1800, bicycling: 1200, metro: 1200 };
 
 // Durations remain in seconds internally; every rounded leg takes at least one minute.
+export const ROUND_UP_SECONDS=30;
+export const DURATION_ROUNDING_VERSION="per-leg-minute-half-up-min-one-v2";
 export function roundDuration(seconds:number):number {
-  return Number.isFinite(seconds)&&seconds>=0?Math.max(1,Math.floor(seconds/60+0.5))*60:NaN;
+  return Number.isFinite(seconds)&&seconds>=0?Math.max(1,Math.floor((seconds+60-ROUND_UP_SECONDS)/60))*60:NaN;
 }
 export function roundLeg(leg:Leg):Leg {
   const rawDuration=leg.rawDuration??leg.duration;
   return {...leg,rawDuration,duration:roundDuration(rawDuration)};
 }
-export function sumLegDurations(legs:Pick<Leg,"duration">[]):number {
-  return legs.reduce((sum,leg)=>sum+roundDuration(leg.duration),0);
+export function sumLegDurations(legs:(Pick<Leg,"duration">&Partial<Pick<Leg,"rawDuration">>)[]):number {
+  return legs.reduce((sum,leg)=>sum+roundDuration(leg.rawDuration??leg.duration),0);
 }
 export function formatDuration(seconds: number): string {
   const rounded=roundDuration(seconds);
@@ -52,12 +54,28 @@ export function polyline(value: unknown): Coord[] {
   if (typeof value !== "string") return [];
   return value.split(";").map(s => s.split(",").map(Number) as Coord).filter(c => c.length === 2 && c.every(Number.isFinite));
 }
-export function mapLink(leg: Leg): string {
-  const mode = leg.mode === "walking" ? "walk" : leg.mode === "bicycling" ? "ride" : "bus";
+export type AmapPlatform = "ios" | "android";
+export function amapPoiId(value:unknown):string|undefined {
+  return typeof value==="string"&&/^B[A-Z0-9]{5,39}$/i.test(value)?value:undefined;
+}
+export function placePoiId(place:Place):string|undefined {
+  return amapPoiId(place.poiId)??(place.kind!=="map"?amapPoiId(place.id):undefined);
+}
+export function mapLink(leg: Leg,platform:AmapPlatform="ios"): string|null {
+  const mode = leg.mode === "walking" ? "2" : leg.mode === "bicycling" ? "3" : "1";
   const stationName=(name:string)=>/[（(]地铁站[）)]$/.test(name)?name.replace(/（地铁站）$/,"(地铁站)"):name.replace(/站$/,"")+"(地铁站)";
   const stationPair=leg.mode==="metro"&&leg.kind!=="full-transit";
-  const from=stationPair?stationName(leg.from):leg.from;
-  const to=stationPair?stationName(leg.to):leg.to;
-  const params = new URLSearchParams({ from: `${leg.origin.join(",")},${from}`, to: `${leg.destination.join(",")},${to}`, mode, coordinate: "gaode", src: "nearby-commute-atlas", callnative: "1" });
-  return `https://uri.amap.com/navigation?${params}`;
+  // A station-looking coordinate label still adds access/egress walking. Every
+  // QR uses the native route API; station pairs require both explicit POIs.
+  if(stationPair&&(!leg.originPoiId||!leg.destinationPoiId))return null;
+  const params=new URLSearchParams({sourceApplication:"nearby-commute-atlas",
+    slon:String(leg.origin[0]),slat:String(leg.origin[1]),sname:stationPair?stationName(leg.from):leg.from,
+    dlon:String(leg.destination[0]),dlat:String(leg.destination[1]),dname:stationPair?stationName(leg.to):leg.to,dev:"0",t:mode,m:"0"});
+  // A known POI label does not mean the API used that POI to calculate the route.
+  // Adding it only in a QR can move the endpoint to a different entrance.
+  const usePoi=stationPair||(leg.mode!=="bicycling"&&leg.routingIdentity==="poi");
+  if(usePoi&&leg.originPoiId)params.set("sid",leg.originPoiId);
+  if(usePoi&&leg.destinationPoiId)params.set("did",leg.destinationPoiId);
+  if(leg.mode==="bicycling"&&platform==="android")params.set("rideType","bike");
+  return `${platform==="ios"?"iosamap://path":"amapuri://route/plan/"}?${params}`;
 }

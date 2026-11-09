@@ -13,7 +13,7 @@ function loadSdk(key:string){
   if(sdk)return sdk;
   sdk=new Promise<void>((resolve,reject)=>{document.getElementById("amap-sdk")?.remove();const script=document.createElement("script");script.id="amap-sdk";script.src=`https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(key)}`;script.onload=()=>resolve();script.onerror=()=>{sdk=null;reject(new Error("地图网络连接失败"));};document.head.appendChild(script);});return sdk;
 }
-export default function AtlasMap({offices,activeId,showAll,layers,coverage,home,plan,pendingLocation,pendingName,onPick,onConfirmPick,onCancelPick,mobileOpen}:{offices:Office[];activeId:string;showAll:boolean;layers:Record<Mode,boolean>;coverage:Coverage|null;home:Place|null;plan:Plan|null;pendingLocation:Coord|null;pendingName:string;onPick:(c:Coord,name?:string)=>void;onConfirmPick:()=>void;onCancelPick:()=>void;mobileOpen:boolean}){
+export default function AtlasMap({offices,activeId,showAll,layers,coverage,home,plan,pendingLocation,pendingName,onPick,onConfirmPick,onCancelPick,mobileOpen}:{offices:Office[];activeId:string;showAll:boolean;layers:Record<Mode,boolean>;coverage:Coverage|null;home:Place|null;plan:Plan|null;pendingLocation:Coord|null;pendingName:string;onPick:(c:Coord,name?:string,poiId?:string)=>void;onConfirmPick:()=>void;onCancelPick:()=>void;mobileOpen:boolean}){
   const container=useRef<HTMLDivElement>(null),map=useRef<any>(null),areas=useRef<any[]>([]),markers=useRef<any[]>([]),lines=useRef<any[]>([]),pin=useRef<any>(null),pick=useRef(onPick);
   const coverageLayer=useRef<ReturnType<typeof createCoverageLayer>|null>(null);
   pick.current=onPick;
@@ -44,7 +44,7 @@ export default function AtlasMap({offices,activeId,showAll,layers,coverage,home,
       });
       instance.on("hotspotclick",(event:any)=>{
         clearTimeout(clickTimer);lastHotspotAt=performance.now();
-        pick.current([event.lnglat.lng,event.lnglat.lat],event.name);
+        pick.current([event.lnglat.lng,event.lnglat.lat],event.name,event.id);
       });
     }catch(e){if(alive)setError(e instanceof Error?e.message:"地图暂时无法加载");}})();
     return()=>{alive=false;clearTimeout(clickTimer);instance?.destroy();if(map.current===instance)map.current=null;areas.current=[];markers.current=[];lines.current=[];pin.current=null;};
@@ -69,7 +69,7 @@ export default function AtlasMap({offices,activeId,showAll,layers,coverage,home,
   },[ready,coverage,activeId,showAll,layers]);
   useEffect(()=>{
     if(!ready||!map.current)return;const m=map.current;m.remove(markers.current);markers.current=[];
-    for(const office of offices){if(!showAll&&office.id!==activeId)continue;const node=document.createElement("div");node.className="office-map-marker";const dot=document.createElement("span");dot.className="office-map-dot";dot.innerHTML='<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h.01M15 7h.01M9 11h.01M15 11h.01M10 21v-6h4v6"/></svg>';const label=document.createElement("span");label.className="office-map-label";label.textContent=office.name;node.appendChild(dot);node.appendChild(label);const marker=new window.AMap.Marker({position:office.entrance,content:node,anchor:"bottom-center",bubble:false,zIndex:110,title:office.name});marker.on("click",()=>pick.current(office.entrance as Coord,office.name));markers.current.push(marker);}m.add(markers.current);
+    for(const office of offices){if(!showAll&&office.id!==activeId)continue;const node=document.createElement("div");node.className="office-map-marker";const dot=document.createElement("span");dot.className="office-map-dot";dot.innerHTML='<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 7h.01M15 7h.01M9 11h.01M15 11h.01M10 21v-6h4v6"/></svg>';const label=document.createElement("span");label.className="office-map-label";label.textContent=office.name;node.appendChild(dot);node.appendChild(label);const marker=new window.AMap.Marker({position:office.entrance,content:node,anchor:"bottom-center",bubble:false,zIndex:110,title:office.name});marker.on("click",()=>pick.current(office.entrance as Coord,office.name,office.poiId));markers.current.push(marker);}m.add(markers.current);
     if(!home){if(areas.current.length)m.setFitView([...markers.current,...areas.current],false,padding(),14);else if(showAll)m.setFitView(markers.current,false,padding(),14);else if(active)m.setZoomAndCenter(13,active.entrance);}
   },[ready,offices,activeId,showAll,coverage,home]);
   useEffect(()=>{

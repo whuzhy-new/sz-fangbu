@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import {assessCoverage,assessMapPick,coverageFeatures,COVERAGE_EDGE_METERS} from "../lib/coverage.ts";
 import type {Coord,Mode} from "../lib/commute.ts";
+import {DURATION_ROUNDING_VERSION} from "../lib/commute.ts";
 import type {Coverage,CoverageGeometry} from "../lib/map-types.ts";
 
 const square=(x:number,y:number,size:number):Coord[]=>[[x,y],[x+size,y],[x+size,y+size],[x,y+size],[x,y]];
@@ -10,8 +11,15 @@ const polygon:CoverageGeometry={type:"Polygon",coordinates:[square(0,0,10)]};
 const modes:Mode[]=["walking","bicycling","metro"];
 function fixture(geometry:CoverageGeometry=polygon):Coverage {
   return {type:"FeatureCollection",features:modes.map(mode=>({type:"Feature",geometry,properties:{officeId:"test",mode}})),
-    metadata:{methodVersion:"amap-station-pair-v3",generatedAt:"2026-11-09",resolutionMeters:50,complete:true,processedStations:1,stationCount:1,note:""}};
+    metadata:{methodVersion:"amap-station-pair-v3",durationRounding:DURATION_ROUNDING_VERSION,generatedAt:"2026-11-09",resolutionMeters:50,complete:true,processedStations:1,stationCount:1,note:""}};
 }
+
+test("coverage generated under a different rounding policy cannot approve a map pick",()=>{
+  const old=fixture();old.metadata.durationRounding="per-leg-minute-up-at-20s-min-one-v3";
+  assert.deepEqual(coverageFeatures(old),[]);
+  assert.equal(assessCoverage(old,"test",[5,5]).status,"unavailable");
+  assert.equal(assessMapPick(old,"test",[5,5]).allowed,false);
+});
 
 test("range checks include the outer boundary and vertices",()=>{
   const coverage=fixture();

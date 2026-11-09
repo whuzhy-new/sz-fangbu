@@ -8,7 +8,7 @@ from amap import ROOT,WORK,atomic_json
 from network import Network
 from geo import wgs_to_gcj
 from correction import BicycleCorrection
-from duration_policy import plan_seconds,ROUNDING_VERSION
+from duration_policy import plan_seconds,ROUNDING_VERSION,ROUND_UP_SECONDS
 from coverage_geometry import complete_small_holes,apply_verified_communities,polygon_parts
 
 RES=50
@@ -18,7 +18,7 @@ def mask_geometry(mask,xs,ys):
         edges=np.diff(np.r_[False,row,False].astype(int));starts=np.flatnonzero(edges==1);ends=np.flatnonzero(edges==-1)
         strips.extend(box(xs[a]-RES/2,y-RES/2,xs[b-1]+RES/2,y+RES/2) for a,b in zip(starts,ends))
     return unary_union(strips).simplify(18,preserve_topology=True) if strips else None
-def export_index(rail):
+def export_index(rail, public_path=None, server_path=None):
     stations=json.loads((ROOT/'public/data/stations.json').read_text())['stations']
     by_name={s['name']:s for s in stations}
     for plans in rail['plans'].values():
@@ -32,17 +32,29 @@ def export_index(rail):
                 if len(pair)!=2:continue
                 for name,key,label in [(pair[0],'origin','from'),(pair[1],'destination','to')]:
                     if name in by_name:leg[key]=by_name[name]['location'];leg[label]=name+'站'
-    atomic_json(ROOT/'public/data/metro-plans.json',rail)
+    atomic_json(public_path or ROOT/'public/data/metro-plans.json',rail)
     skinny={**rail,'plans':{}}
     for office,plans in rail['plans'].items():
         skinny['plans'][office]={sid:{**p,'legs':[{**leg,'paths':[]} for leg in p['legs']]} for sid,p in plans.items()}
-    atomic_json(ROOT/'data/metro-index.json',skinny)
+    atomic_json(server_path or ROOT/'data/metro-index.json',skinny)
 
-if __name__=='__main__':
-    rail=json.loads((ROOT/'public/data/metro-plans.json').read_text())
-    if not rail['complete'] or rail.get('methodVersion')!='amap-station-pair-v3':raise RuntimeError('Verified station-pair preparation is not complete; refusing to generate an invalid map.')
-    offices=json.loads((ROOT/'public/data/offices.json').read_text());net=Network();correction=BicycleCorrection()
-    corrections=json.loads((ROOT/'public/data/coverage-corrections.json').read_text())['features']
+def generate_coverage(rail, offices, net, correction, corrections):
+    """Generate only the supplied offices; callers may stage before installation."""
+    if not rail['complete'] or rail.get('methodVersion')!='amap-station-pair-v3':
+        raise RuntimeError('Verified station-pair preparation is not complete.')
+    for office in offices:
+        for plan in rail['plans'][office['id']].values():
+            if not plan['legs'] or plan['legs'][-1]['destination']!=office['entrance']:
+                raise RuntimeError('Fixed route has a stale office endpoint: '+office['id'])
+            tail=plan['legs'][-1]
+            if office.get('walkingIdentity')=='poi' and tail['mode']=='walking' and tail.get('routingIdentity')!='poi':
+                raise RuntimeError('Fixed route has a stale office routing identity: '+office['id'])
+        for feature in corrections:
+            props=feature['properties']
+            if props['officeId']!=office['id']:continue
+            legs=props.get('proof',{}).get('legs',[])
+            if not legs or legs[-1]['destination']!=office['entrance']:
+                raise RuntimeError('Community proof has a stale office endpoint: '+office['id'])
     for feature in corrections:
         props=feature['properties']
         if props.get('departureDate')!=rail['departureDate'] or props.get('departureTime')!=rail['departureTime']:raise RuntimeError('Community proof date does not match the metro snapshot')
@@ -81,11 +93,9 @@ if __name__=='__main__':
         values['metro']=np.minimum(values.pop('metro-walking'),values.pop('metro-bicycling'))
         geometries={}
         for mode,limit in [('walking',1800),('bicycling',1200),('metro',1200)]:
-            # Fixed seeds are whole minutes, so rounding the combined field is
-            # gives the same eligibility mask as fixed minutes + rounded access:
-            # seeds leave at least one minute for access. Use half-up, not
-            # numpy/Python's banker's rounding at exactly 30 seconds.
-            mask=(np.maximum(60,np.floor(values[mode]/60+.5)*60)<=limit).reshape(len(ys),len(xs));geometry=mask_geometry(mask,xs,ys)
+            # Whole-minute fixed seeds leave at least one minute for access.
+            # Use the same threshold as each runtime measurement leg.
+            mask=(np.maximum(60,np.floor((values[mode]+60-ROUND_UP_SECONDS)/60)*60)<=limit).reshape(len(ys),len(xs));geometry=mask_geometry(mask,xs,ys)
             if geometry is not None:geometries[mode]=geometry
         geometries,community_stats[oid]=apply_verified_communities(geometries,[f for f in corrections if f['properties']['officeId']==oid])
         geometries,completion[oid]=complete_small_holes(geometries)
@@ -113,5 +123,13 @@ if __name__=='__main__':
             geometry=completed[f['properties']['mode']]
             assert geometry.is_valid
             f['geometry']=mapping(geometry)
-    atomic_json(ROOT/'public/data/coverage.json',{'type':'FeatureCollection','features':features,'metadata':{'methodVersion':rail['methodVersion'],'durationRounding':ROUNDING_VERSION,'generatedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'resolutionMeters':RES,'complete':True,'processedStations':len(rail['processedStations']),'stationCount':rail['stationCount'],'bicycleCalibrationSamples':len(correction.rows),'bicycleAccessTimeRatio':correction.accessRatio,'osmDate':'2026-11-07','coordinateSystem':'GCJ02','smallHoleCompletion':{'maxAreaM2':10000,'offices':completion,'exportedCleanup':cleanup},'verifiedCommunityCorrections':community_stats,'note':'高德固定地铁段＋校准OSM路网，50米栅格估算。时长按分钟取整，每段先取整再相加。1万平方米以内内部小洞补全，住宅空白按小区门口核验；具体位置仍须单独核验。'}})
+    return {'type':'FeatureCollection','features':features,'metadata':{'methodVersion':rail['methodVersion'],'durationRounding':ROUNDING_VERSION,'generatedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'resolutionMeters':RES,'complete':True,'processedStations':len(rail['processedStations']),'stationCount':rail['stationCount'],'bicycleCalibrationSamples':len(correction.rows),'bicycleAccessTimeRatio':correction.accessRatio,'osmDate':'2026-11-07','coordinateSystem':'GCJ02','smallHoleCompletion':{'maxAreaM2':10000,'offices':completion,'exportedCleanup':cleanup},'verifiedCommunityCorrections':community_stats,'note':'高德固定地铁段＋校准OSM路网，50米栅格估算。时长按分钟取整，每段先取整再相加。1万平方米以内内部小洞补全，住宅空白按小区门口核验；具体位置仍须单独核验。'}}
+
+
+if __name__=='__main__':
+    rail=json.loads((ROOT/'public/data/metro-plans.json').read_text())
+    offices=json.loads((ROOT/'public/data/offices.json').read_text())
+    corrections=json.loads((ROOT/'public/data/coverage-corrections.json').read_text())['features']
+    coverage=generate_coverage(rail, offices, Network(), BicycleCorrection(), corrections)
+    atomic_json(ROOT/'public/data/coverage.json', coverage)
     export_index(rail)

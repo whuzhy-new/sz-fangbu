@@ -20,7 +20,7 @@ def entrance_list(station):
     rows=[{'id':p['id'],'name':p['name'],'location':coord(p['location']),'source':'amap'} for p in r.get('pois',[]) if p.get('name','').startswith(station['name']+'地铁站') and p.get('typecode')=='150501']
     return rows or [{'id':station['id'],'name':station['name']+'站地图定位点','location':station['location'],'source':'station-center'}]
 def surface(result,mode,origin,dest,from_name,to_name):
-    return {'mode':mode,'label':'步行' if mode=='walking' else '自行车','origin':origin,'destination':dest,'from':from_name,'to':to_name,'duration':result['duration'],'distance':result['distance'],'paths':[coordinates(s.get('polyline')) for s in result['steps'] if s.get('polyline')],'instructions':[s.get('instruction','') for s in result['steps']],'source':'amap'}
+    return {'mode':mode,'label':'步行' if mode=='walking' else '自行车','origin':origin,'destination':dest,'from':from_name,'to':to_name,'duration':result['duration'],'distance':result['distance'],'paths':[coordinates(s.get('polyline')) for s in result['steps'] if s.get('polyline')],'instructions':[s.get('instruction','') for s in result['steps']],'source':'amap',**{k:result[k] for k in ['originPoiId','destinationPoiId','routingIdentity'] if k in result}}
 def metro_options(data,station):
     result=[]
     for t in data.get('route',{}).get('transits',[]):

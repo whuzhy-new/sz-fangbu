@@ -69,12 +69,24 @@ def request(service, params, category="routes"):
     atomic_json(cached, result)
     return result
 
-def route(mode, origin, destination):
+def surface_params(mode, origin, destination, origin_poi=None, destination_poi=None):
     coords = lambda p: ",".join(f"{x:.6f}" for x in p)
-    data = request("v5/direction/" + mode, {"origin":coords(origin), "destination":coords(destination), "show_fields":"cost,polyline,navi"})
+    params = {"origin":coords(origin), "destination":coords(destination), "show_fields":"cost,polyline,navi"}
+    # These identity parameters are documented for walking, not ordinary cycling.
+    if mode == 'walking':
+        if origin_poi: params['origin_id'] = origin_poi
+        if destination_poi: params['destination_id'] = destination_poi
+    return params
+
+def route(mode, origin, destination, origin_poi=None, destination_poi=None):
+    params = surface_params(mode, origin, destination, origin_poi, destination_poi)
+    data = request("v5/direction/" + mode, params)
     paths = data.get("route", {}).get("paths", [])
     if not paths: return None
     path = paths[0]
     duration=float(path.get("cost", {}).get("duration") or path.get("duration") or 0)
     if duration<=0 and float(path["distance"])>1:raise RuntimeError("AMap returned no usable surface duration")
-    return {"distance":float(path["distance"]), "duration":duration, "steps":path.get("steps", [])}
+    return {"distance":float(path["distance"]), "duration":duration, "steps":path.get("steps", []),
+            'routingIdentity':'poi' if params.get('origin_id') or params.get('destination_id') else 'coordinates',
+            **({'originPoiId':params['origin_id']} if 'origin_id' in params else {}),
+            **({'destinationPoiId':params['destination_id']} if 'destination_id' in params else {})}
