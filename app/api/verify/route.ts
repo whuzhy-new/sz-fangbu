@@ -40,9 +40,9 @@ export async function POST(request:Request) {
   const targets=new Map<string,Coord>();
   for(const candidates of candidatesByOffice.values())for(const candidate of candidates)targets.set(coordinateKey(candidate.entry.location),candidate.entry.location);
   const targetKeys=[...targets.keys()],targetIndices=new Map(targetKeys.map((key,index)=>[key,index]));
-  // One pair of searches serves every prepared entrance and requested office.
-  // Start alongside surface API calls; this does not trigger any metro API.
-  const local=localAccessTimes(input.location,[...targets.values()],request.url).catch(()=>null);
+  // Only load the road graph if both earlier stages fail. Reuse one search
+  // across requested offices without delaying the direct metro API.
+  let local:ReturnType<typeof localAccessTimes>|undefined;
   let cancelled=false;
   const stream=new ReadableStream({
     async start(controller) {
@@ -67,19 +67,6 @@ export async function POST(request:Request) {
             }catch(error){result.complete=false;result.errors.push(error instanceof MapApiError?error.message:"路线暂未完成查询。");}
           }));
           const surfaceQualified=result.plans.some(p=>p.qualified);
-          const candidates=candidatesByOffice.get(office.id)!;
-          let ranked:ReturnType<typeof rankAccessCandidates<typeof candidates[number]>>|undefined;
-          let localAvailable=false;
-          if(!surfaceQualified&&!stopped()) {
-            const measured=await local;
-            const times=candidates.map(candidate=>measured?.times[targetIndices.get(coordinateKey(candidate.entry.location))!]??{walking:null,bicycling:null});
-            ranked=rankAccessCandidates(candidates,times);
-            if(measured){
-              localAvailable=true;
-              result.localSearch={...ranked.summary,elapsedMs:measured.elapsedMs,source:"model"};
-              send({type:"local-search",officeId:office.id,localSearch:result.localSearch});
-            }
-          }
           let fullMetroQualified=false;
           if(!surfaceQualified&&!stopped()&&!apiSignal.aborted)try{
             stage("metro-full");result.checked++;
@@ -90,11 +77,20 @@ export async function POST(request:Request) {
               result.plans.push(plan);send({type:"plan",plan});
             }
           }catch(error){result.complete=false;result.errors.push(error instanceof MapApiError?error.message:"完整地铁方案暂未完成查询。");}
-          if(!surfaceQualified&&!fullMetroQualified&&!stopped()) {
+          if(!surfaceQualified&&!fullMetroQualified&&!stopped()&&!apiSignal.aborted) {
             stage("metro-segmented");
+            const candidates=candidatesByOffice.get(office.id)!;
+            local??=localAccessTimes(input.location,[...targets.values()],request.url);
+            const measured=await local.catch(()=>null);
+            const times=candidates.map(candidate=>measured?.times[targetIndices.get(coordinateKey(candidate.entry.location))!]??{walking:null,bicycling:null});
+            const ranked=rankAccessCandidates(candidates,times);
+            if(measured){
+              result.localSearch={...ranked.summary,elapsedMs:measured.elapsedMs,source:"model"};
+              send({type:"local-search",officeId:office.id,localSearch:result.localSearch});
+            }
             if(!preparedReady){result.complete=false;result.errors.push("车站到车站的地铁方案正在重算，暂不使用旧方案判定。");}
-            if(!localAvailable){result.complete=false;result.errors.push("本地路网暂不可用，已保留高德结果。");}
-            for(const {candidate,mode} of ranked?.proofs??[]) {
+            if(!measured){result.complete=false;result.errors.push("本地路网暂不可用，已保留高德结果。");}
+            for(const {candidate,mode} of ranked.proofs) {
               if(stopped()||apiSignal.aborted)break;
               try{
                 result.checked++;

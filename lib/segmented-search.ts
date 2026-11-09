@@ -2,8 +2,8 @@ import {roundDuration, type Coord} from "./commute.ts";
 import type {AccessTime,AccessMode} from "./local-road-network.ts";
 
 export const ACCESS_PROOF_LIMIT=3;
-// Leave half a second for local HTTP/rendering overhead around the 5 s target.
-export const VERIFY_TIMEOUT_MS=4500;
+// Stream early results; allow sequential route queries to finish on hosted Workers.
+export const VERIFY_TIMEOUT_MS=25000;
 export type AccessCandidate={plan:{stationId:string;duration:number};entry:{id:string;location:Coord};distance:number};
 
 /** Compare every prepared entrance/mode; model times rank API proofs only. */

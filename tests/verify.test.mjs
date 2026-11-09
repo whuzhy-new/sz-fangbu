@@ -19,8 +19,11 @@ const offices=[{id:'innovation',name:'创新工区',poiId:'B0OFFICE01',walkingId
 const leg=(mode,duration,origin,destination,from,to)=>({mode,duration,origin,destination,from,to,
   label:mode,distance:100,paths:[],source:'amap',measuredAt});
 
-async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false}={}){
-  const calls=[];
+async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,elapsedPerCall=0}={}){
+  const calls=[],work=[];
+  let elapsed=0,budget;
+  const deadline=deadlineController??new AbortController();
+  const advance=()=>{elapsed+=elapsedPerCall;if(elapsed>=budget)deadline.abort();};
   class MapApiError extends Error{}
   const stations=Array.from({length:stationCount},(_,i)=>({id:`nanyou-${i}`,name:i?`南油${i}`:'南油',location:point}));
   const plans=Object.fromEntries(offices.map(office=>[office.id,Object.fromEntries(stations.map(station=>[station.id,{id:`${office.id}-${station.id}`,
@@ -33,7 +36,7 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
   const dependencies={
     '@/public/data/offices.json':{default:offices},
     '@/data/metro-index.json':{default:{complete:true,methodVersion:'amap-station-pair-v3',durationRounding:commute.DURATION_ROUNDING_VERSION,plans,entries}},
-    '@/lib/local-access-server':{async localAccessTimes(origin,targets){if(localFailure)throw new Error('unavailable');return {times:targets.map(()=>({walking:modelAccess,bicycling:modelAccess})),elapsedMs:1,osmDate:'2026-11-07'};}},
+    '@/lib/local-access-server':{async localAccessTimes(origin,targets){work.push('local-model');if(localFailure)throw new Error('unavailable');return {times:targets.map(()=>({walking:modelAccess,bicycling:modelAccess})),elapsedMs:1,osmDate:'2026-11-07'};}},
     '@/lib/segmented-search':segmentedSearch,
     '@/public/data/stations.json':{default:{stations:[...stations,{id:'yuehaimen',name:'粤海门',location:[113.945531,22.532695]}]}},
     '@/lib/commute':commute,
@@ -42,6 +45,7 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
       async surfaceLeg(mode,origin,destination,from,to,options){
         const office=offices.find(o=>o.name===to);
         calls.push(`${office?.id??'access'}:${mode}`);
+        work.push(calls.at(-1));advance();
         const duration=office?(surface[office.id]?.[mode]??(mode==='walking'?1830:1230)):access;
         if(office&&abortAfterSurface)deadlineController.abort();
         if(duration==='error')throw new MapApiError('地图查询失败');
@@ -50,13 +54,14 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
       async fullMetro(origin,destination,from,to,options){
         const office=offices.find(o=>o.name===to);
         calls.push(`${office.id}:direct`);
+        work.push(calls.at(-1));advance();
         const duration=direct[office.id]??1230;
         if(duration==='error')throw new MapApiError('完整地铁查询失败');
         return {...leg('metro',duration,origin,destination,from,to),kind:'full-transit',...transitRouteParams(origin,destination,options).endpoints};
       }
     }
   };
-  const signals=deadlineController?{any:signals=>AbortSignal.any(signals),timeout:ms=>{assert.equal(ms,4500);return deadlineController.signal;}}:AbortSignal;
+  const signals={any:signals=>AbortSignal.any(signals),timeout:ms=>{budget=ms;return deadline.signal;}};
   const context=createContext({Request,Response,ReadableStream,TextEncoder,AbortSignal:signals});
   const route=new SourceTextModule(handlerSource,{context});
   await route.link(specifier=>{
@@ -75,13 +80,14 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
   const events=(await response.text()).trim().split('\n').map(JSON.parse);
   assert.equal(events.at(-1).type,'done');
   assert.ok(!events.some(e=>e.type==='error'));
-  return {calls,events,results:events.filter(e=>e.type==='office-result').map(e=>e.result)};
+  return {calls,work,elapsed,events,results:events.filter(e=>e.type==='office-result').map(e=>e.result)};
 }
 
 for(const [mode,duration] of [['walking',1800],['bicycling',1200]]){
   test(`${mode} meets its inclusive threshold: neither metro stage is requested`,async()=>{
-    const {calls,events,results:[result]}=await verify({surface:{innovation:{[mode]:duration}}});
+    const {calls,work,events,results:[result]}=await verify({surface:{innovation:{[mode]:duration}}});
     assert.deepEqual(calls,['innovation:walking','innovation:bicycling']);
+    assert.ok(!work.includes('local-model'));
     assert.equal(result.checked,2);
     assert.ok(result.plans.some(p=>p.mode===mode&&p.qualified));
     assert.ok(events.filter(e=>e.type==='plan').every(e=>e.plan.mode!=='metro'));
@@ -90,16 +96,18 @@ for(const [mode,duration] of [['walking',1800],['bicycling',1200]]){
 }
 
 test('direct metro runs after both surface routes fail and skips segmented queries at 20 minutes',async()=>{
-  const {calls,events,results:[result]}=await verify({direct:{innovation:1200}});
+  const {calls,work,events,results:[result]}=await verify({direct:{innovation:1200}});
   assert.deepEqual(calls,['innovation:walking','innovation:bicycling','innovation:direct']);
   assert.equal(result.checked,3);
+  assert.ok(!work.includes('local-model'));
   assert.equal(result.plans.find(p=>p.qualified)?.metroMethod,'full');
   assert.deepEqual(events.filter(e=>e.type==='stage').map(e=>e.stage),['surface','metro-full']);
 });
 
 test('segmented metro runs only after the direct total exceeds 20 minutes',async()=>{
-  const {calls,events,results:[result]}=await verify({direct:{innovation:1230}});
+  const {calls,work,events,results:[result]}=await verify({direct:{innovation:1230}});
   assert.deepEqual(calls,['innovation:walking','innovation:bicycling','innovation:direct','access:walking']);
+  assert.deepEqual(work,['innovation:walking','innovation:bicycling','innovation:direct','local-model','access:walking']);
   assert.ok(result.plans.some(p=>p.metroMethod==='full'&&!p.qualified));
   assert.ok(result.plans.some(p=>p.metroMethod==='segmented'&&p.qualified&&p.duration===1140));
   assert.deepEqual(events.filter(e=>e.type==='stage').map(e=>e.stage),['surface','metro-full','metro-segmented']);
@@ -223,12 +231,31 @@ test('an access API failure preserves the complete local comparison and earlier 
   assert.equal(result.complete,false);
 });
 
-test('the five-second deadline stops later APIs while retaining the local comparison',async()=>{
+test('the total deadline stops later APIs and avoids loading the model after cancellation',async()=>{
   const controller=new AbortController();
-  const {calls,results:[result]}=await verify({entryCount:40,deadlineController:controller,abortAfterSurface:true});
+  const {calls,work,results:[result]}=await verify({entryCount:40,deadlineController:controller,abortAfterSurface:true});
   assert.deepEqual(calls,['innovation:walking']);
-  assert.equal(result.localSearch.total,80);
+  assert.equal(result.localSearch,undefined);
+  assert.ok(!work.includes('local-model'));
   assert.equal(result.complete,false);
+  assert.ok(result.errors.includes('高德核验超时，已有结果已保留。'));
+});
+
+test('sequential hosted API calls can finish beyond 4.5 seconds while streaming earlier results',async()=>{
+  const {elapsed,events,results:[result]}=await verify({elapsedPerCall:1600});
+  assert.ok(elapsed>4500);
+  assert.ok(result.plans.some(p=>p.metroMethod==='segmented'&&p.qualified));
+  assert.deepEqual(result.errors,[]);
+  assert.equal(result.complete,true);
+  assert.ok(events.findIndex(e=>e.type==='plan')<events.findIndex(e=>e.type==='stage'&&e.stage==='metro-full'));
+});
+
+test('the overall deadline still bounds slow verification and retains completed plans',async()=>{
+  const {elapsed,calls,results:[result]}=await verify({elapsedPerCall:9000});
+  assert.equal(elapsed,27000);
+  assert.equal(calls.length,3);
+  assert.equal(result.complete,false);
+  assert.ok(result.plans.some(p=>p.mode==='walking'));
   assert.ok(result.errors.includes('高德核验超时，已有结果已保留。'));
 });
 
