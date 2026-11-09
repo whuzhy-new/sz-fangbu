@@ -1,6 +1,6 @@
 "use client";
 import {useState} from "react";
-import {ArrowRight,Check,ChevronDown,CircleHelp,LoaderCircle,QrCode} from "lucide-react";
+import {ArrowRight,Check,ChevronDown,CircleHelp,ExternalLink,LoaderCircle} from "lucide-react";
 import {formatDuration,QUERY_STAGE_LABEL,type Plan,type QueryStage,type Verification} from "@/lib/commute";
 import ModeIcon from "./mode-icon";
 import AnimatedCollapse from "./animated-collapse";
@@ -12,7 +12,7 @@ function RouteSource({plan,onReview}:{plan:Plan;onReview:()=>void}) {
   const [open,setOpen]=useState(false);
   return <div className="route-source">
     <div className="route-detail-actions">
-      <button className="route-review-button" aria-haspopup="dialog" aria-controls="route-review-dialog" onClick={onReview}><QrCode size={15} aria-hidden="true"/>上高德看路线</button>
+      <button className="route-review-button" aria-haspopup="dialog" aria-controls="route-review-dialog" onClick={onReview}><ExternalLink size={15} aria-hidden="true"/>上高德看路线</button>
       <button className="route-source-toggle" aria-expanded={open} aria-controls={`source-${plan.id}`} onClick={()=>setOpen(value=>!value)}>数据与计算口径<ChevronDown size={13} className={open?"rotated":""} aria-hidden="true"/></button>
     </div>
     <AnimatedCollapse open={open} id={`source-${plan.id}`}>
@@ -54,7 +54,7 @@ export default function RouteResults({result,plans,selectedPlan,loading,querySta
             <span className="route-card-time"><strong>{formatDuration(plan.duration)}</strong>{plan.qualified&&<Check size={14} aria-label="符合房补条件"/>}</span>
             {expandable&&<ChevronDown size={16} className={open?"rotated":""} aria-hidden="true"/>}
           </button>
-          {!expandable&&<button className="route-review-icon" aria-label={`上高德看路线：${plan.title}`} title="上高德看路线" aria-haspopup="dialog" aria-controls="route-review-dialog" onClick={()=>setReviewPlan(plan)}><QrCode size={17} aria-hidden="true"/></button>}
+          {!expandable&&<button className="route-review-icon" aria-label={`上高德看路线：${plan.title}`} title="上高德看路线" aria-haspopup="dialog" aria-controls="route-review-dialog" onClick={()=>setReviewPlan(plan)}><ExternalLink size={17} aria-hidden="true"/></button>}
           </div>
           {expandable&&<AnimatedCollapse open={open} id={detailsId}>
           <div className="route-details">

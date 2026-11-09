@@ -2,7 +2,7 @@ import {mapLink,sumLegDurations,type AmapPlatform,type Leg,type Plan} from "./co
 
 export type ReviewRoute={id:string;label:string;leg:Leg;url:string|null};
 
-/** One QR per measurement page; station transfers remain in the middle page. */
+/** One link per measurement page; station transfers remain in the middle page. */
 export function reviewRoutes(plan:Plan,platform:AmapPlatform="ios"):ReviewRoute[] {
   const route=(id:string,label:string,leg:Leg):ReviewRoute=>({id,label,leg,url:mapLink(leg,platform)});
   if(plan.metroMethod!=="segmented")return plan.legs.map((leg,index)=>route(`full-${index}`,"完整路线",leg));
