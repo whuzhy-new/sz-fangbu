@@ -1,12 +1,23 @@
 import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { polyline, surfaceDuration, type Coord, type Leg } from "./commute";
+import { fullMetroLeg } from "./full-metro";
+
+export const METRO_DEPARTURE = {date:"2026-11-09",time:"09-00",label:"2026-11-09 09:00"};
 
 type Json = Record<string, any>;
 export class MapApiError extends Error { constructor(message: string, public code = "MAP_ERROR") { super(message); } }
-const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+type RequestOptions={signal?:AbortSignal};
+const timeoutError=()=>new MapApiError("高德核验超时，已有结果已保留。", "TIME_BUDGET");
+const wait = (ms:number,signal?:AbortSignal) => new Promise<void>((resolve,reject)=>{
+  if(signal?.aborted){reject(timeoutError());return;}
+  const cancel=()=>{clearTimeout(timer);reject(timeoutError());};
+  const timer=setTimeout(()=>{signal?.removeEventListener("abort",cancel);resolve();},ms);
+  signal?.addEventListener("abort",cancel,{once:true});
+});
 
-export async function amap(service: string, params: Record<string, string | number>, category: "routes" | "search" = "routes"): Promise<{data:Json; createdAt:number; cached:boolean}> {
+export async function amap(service: string, params: Record<string, string | number>, category: "routes" | "search" = "routes", options:RequestOptions={}): Promise<{data:Json; createdAt:number; cached:boolean}> {
+  if(options.signal?.aborted)throw timeoutError();
   if (!env.AMAP_WEB_KEY) throw new MapApiError("地图服务尚未配置，请稍后重试。", "MISSING_KEY");
   if (!env.DB) throw new MapApiError("调用预算服务未就绪，已暂停地图请求。", "NO_BUDGET_STORE");
   const cacheKey = createHash("sha256").update(JSON.stringify([service, Object.entries(params).sort()])).digest("hex");
@@ -22,15 +33,16 @@ export async function amap(service: string, params: Record<string, string | numb
   if (!reserved) throw new MapApiError("本月已达到应用设置的免费调用上限。已有地图仍可浏览，待额度恢复后再核验。", "BUDGET_LIMIT");
   await env.DB.prepare("INSERT INTO api_usage(bucket,count) VALUES('request-slot',0) ON CONFLICT(bucket) DO NOTHING").run();
   const slot = await env.DB.prepare("UPDATE api_usage SET count=MAX(count,?)+650 WHERE bucket='request-slot' RETURNING count").bind(now).first<{count:number}>();
-  if (slot) await wait(Math.max(0, slot.count - Date.now()));
+  if (slot) await wait(Math.max(0, slot.count - Date.now()),options.signal);
+  if(options.signal?.aborted)throw timeoutError();
   const search = new URLSearchParams(Object.entries(params).map(([k,v]) => [k,String(v)]));
   search.set("key", env.AMAP_WEB_KEY);
   let data:Json;
   try {
-    const response = await fetch(`https://restapi.amap.com/${service}?${search}`, { signal:AbortSignal.timeout(15000) });
+    const response = await fetch(`https://restapi.amap.com/${service}?${search}`, { signal:options.signal?AbortSignal.any([options.signal,AbortSignal.timeout(15000)]):AbortSignal.timeout(15000) });
     if (!response.ok) throw new Error("HTTP error");
     data = await response.json() as Json;
-  } catch { throw new MapApiError("暂时无法连接高德，当前地点尚未完成核验，请重试。", "NETWORK"); }
+  } catch { if(options.signal?.aborted)throw timeoutError();throw new MapApiError("暂时无法连接高德，当前地点尚未完成核验，请重试。", "NETWORK"); }
   if (String(data.status) !== "1") {
     const quota = ["10003","10004","10014","10019","10020","10021","10044","10045"].includes(String(data.infocode));
     throw new MapApiError(quota ? "高德额度或请求频率受限，请稍后再试。当前地点尚未完成核验。" : `地图暂未返回可用结果（${String(data.infocode)}）。`, String(data.infocode));
@@ -41,10 +53,20 @@ export async function amap(service: string, params: Record<string, string | numb
   return {data,createdAt,cached:false};
 }
 
-export async function surfaceLeg(mode: "walking" | "bicycling", origin: Coord, destination: Coord, from:string, to:string): Promise<Leg | null> {
-  const {data,createdAt,cached} = await amap(`v5/direction/${mode}`, { origin:origin.map(x=>x.toFixed(6)).join(","), destination:destination.map(x=>x.toFixed(6)).join(","), show_fields:"cost,polyline,navi" });
+export async function surfaceLeg(mode: "walking" | "bicycling", origin: Coord, destination: Coord, from:string, to:string,options:RequestOptions={}): Promise<Leg | null> {
+  const {data,createdAt,cached} = await amap(`v5/direction/${mode}`, { origin:origin.map(x=>x.toFixed(6)).join(","), destination:destination.map(x=>x.toFixed(6)).join(","), show_fields:"cost,polyline,navi" },"routes",options);
   const path = data.route?.paths?.[0];
   const duration = surfaceDuration(path);
   if (duration===null) return null;
   return {mode,label:mode === "walking" ? "步行" : "自行车",origin,destination,from,to,duration,distance:Number(path.distance),paths:(path.steps ?? []).map((s:Json) => polyline(s.polyline)).filter((p:Coord[])=>p.length>1),instructions:(path.steps??[]).map((s:Json)=>String(s.instruction??"")).filter(Boolean),source:"amap",measuredAt:new Date(createdAt).toISOString(),cached};
+}
+
+export async function fullMetro(origin:Coord,destination:Coord,from:string,to:string,options:RequestOptions={}):Promise<Leg|null> {
+  const {data,createdAt,cached}=await amap("v5/direction/transit/integrated",{
+    origin:origin.map(x=>x.toFixed(6)).join(","),destination:destination.map(x=>x.toFixed(6)).join(","),
+    city1:"0755",city2:"0755",strategy:7,AlternativeRoute:10,
+    date:METRO_DEPARTURE.date,time:METRO_DEPARTURE.time,show_fields:"cost,polyline,navi",
+  },"routes",options);
+  const leg=fullMetroLeg(data,origin,destination,from,to);
+  return leg?{...leg,measuredAt:new Date(createdAt).toISOString(),cached}:null;
 }

@@ -30,11 +30,19 @@ def public_get(url):
     with urllib.request.urlopen(req, timeout=30, context=context) as response:
         return json.load(response)
 
+def cache_path(service, params):
+    normalized = {k: str(v) for k,v in params.items()}
+    digest = hashlib.sha256(json.dumps([service, normalized], sort_keys=True).encode()).hexdigest()
+    return WORK / "amap-cache" / (digest + ".json")
+
+def cached_response(service, params):
+    path = cache_path(service, params)
+    return json.loads(path.read_text()) if path.exists() else None
+
 def request(service, params, category="routes"):
     config = local_config()
     normalized = {k: str(v) for k,v in params.items()}
-    digest = hashlib.sha256(json.dumps([service, normalized], sort_keys=True).encode()).hexdigest()
-    cached = WORK / "amap-cache" / (digest + ".json")
+    cached = cache_path(service, normalized)
     if cached.exists(): return json.loads(cached.read_text())
     ledger_path = WORK / "amap-usage.json"
     key = config.get("AMAP_WEB_KEY")

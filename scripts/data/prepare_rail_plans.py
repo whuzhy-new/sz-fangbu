@@ -6,6 +6,7 @@ as a separate reference; never claim provider segment fields are a train timetab
 import datetime, json, math
 from concurrent.futures import ThreadPoolExecutor
 from amap import ROOT, atomic_json, request, route
+from duration_policy import round_seconds,sum_leg_seconds,plan_seconds
 
 VERSION='street-rail-and-transfer-v2'
 def coord(value):return [float(v) for v in value.split(',')]
@@ -59,10 +60,14 @@ def metro_options(data,station):
         last=lines[-1].get('arrival_stop',{})
         result.append({'railDuration':sum(times),'transferDuration':transfers,'fixedDuration':sum(times)+transfers,'journeyLegs':legs,'rawDuration':float(t.get('cost',{}).get('duration') or t.get('duration') or 0),'arrivalName':last.get('name',''),'exit':last.get('exit') or {},'arrivalLocation':coord(last['location']),'lines':[l.get('name','') for l in lines]})
     return result
+def full_params(station,office):
+    return {'origin':','.join(map(str,station['location'])),'destination':','.join(map(str,office['entrance'])),'city1':'0755','city2':'0755','strategy':8,'AlternativeRoute':10,'date':'2026-11-09','time':'09-00','show_fields':'cost,polyline,navi'}
+def station_params(a,b):
+    return {'origin':','.join(map(str,a['location'])),'destination':','.join(map(str,b['location'])),'originpoi':a['id'],'destinationpoi':b['id'],'city1':'0755','city2':'0755','strategy':6,'date':'2026-11-09','time':'09-00','show_fields':'cost,polyline,navi'}
 def full_query(station,office):
-    return request('v5/direction/transit/integrated',{'origin':','.join(map(str,station['location'])),'destination':','.join(map(str,office['entrance'])),'city1':'0755','city2':'0755','strategy':8,'AlternativeRoute':10,'date':'2026-11-09','time':'09-00','show_fields':'cost,polyline,navi'})
+    return request('v5/direction/transit/integrated',full_params(station,office))
 def station_query(a,b):
-    return request('v5/direction/transit/integrated',{'origin':','.join(map(str,a['location'])),'destination':','.join(map(str,b['location'])),'originpoi':a['id'],'destinationpoi':b['id'],'city1':'0755','city2':'0755','strategy':6,'date':'2026-11-09','time':'09-00','show_fields':'cost,polyline,navi'})
+    return request('v5/direction/transit/integrated',station_params(a,b))
 
 if __name__=='__main__':
     offices=json.loads((ROOT/'public/data/offices.json').read_text())
@@ -97,7 +102,7 @@ if __name__=='__main__':
                     options+=added
                 best=None
                 for option in options:
-                    if option['fixedDuration']>=1200:continue
+                    if sum_leg_seconds(option['journeyLegs'])>1200:continue
                     arrival=by_name.get(option['arrivalName'])
                     gates=[]
                     if option['exit'].get('location'):
@@ -111,18 +116,18 @@ if __name__=='__main__':
                     for gate in gates:
                         for mode in ['walking','bicycling']:
                             # A generously fast surface bound only skips geometrically impossible chains.
-                            if option['fixedDuration']+meters(gate['location'],office['entrance'])/12>1200:continue
+                            if sum_leg_seconds(option['journeyLegs'])+round_seconds(meters(gate['location'],office['entrance'])/12)>1200:continue
                             tail=route(mode,gate['location'],office['entrance'])
                             if not tail:continue
                             duration=option['fixedDuration']+tail['duration']
-                            if best is not None and duration>=best['duration']:continue
+                            if best is not None and sum_leg_seconds(option['journeyLegs'])+round_seconds(tail['duration'])>=plan_seconds(best):continue
                             journey=[{**leg} for leg in option['journeyLegs']]
                             tail_leg=surface(tail,mode,gate['location'],office['entrance'],gate['name'],office['name'])
                             best={'id':s['id']+'-'+office['id'],'stationId':s['id'],'stationName':s['name'],'officeId':office['id'],'duration':duration,'legs':journey+[tail_leg],'lines':option['lines'],'measuredAt':stamp(),'source':'amap','originalTotalDuration':option['rawDuration'],'clock':VERSION}
                 if best:result['plans'][office['id']][s['id']]=best
             result['processedStations'].append(s['id']);result['generatedAt']=stamp();atomic_json(output,result)
             if index%5==0 or s['name']=='粤海门':
-                print(json.dumps({'station':s['name'],'processed':len(result['processedStations']),'total':len(stations),'positiveBudgetStations':{o['id']:sum(p['duration']<=1200 for p in result['plans'][o['id']].values()) for o in offices}},ensure_ascii=False),flush=True)
+                print(json.dumps({'station':s['name'],'processed':len(result['processedStations']),'total':len(stations),'positiveBudgetStations':{o['id']:sum(plan_seconds(p)<=1200 for p in result['plans'][o['id']].values()) for o in offices}},ensure_ascii=False),flush=True)
         except RuntimeError as error:
             result['errors'].append({'station':s['name'],'error':str(error),'at':stamp()});atomic_json(output,result);print(str(error),flush=True);raise
     result['complete']=True;result['generatedAt']=stamp();atomic_json(output,result)

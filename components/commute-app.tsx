@@ -1,75 +1,272 @@
 "use client";
-import {useCallback,useEffect,useRef,useState} from "react";
-import {ArrowLeft,ArrowRight,ArrowUpRight,Bike,Check,CheckCheck,ChevronDown,ChevronRight,CircleHelp,Footprints,Layers2,LoaderCircle,MapPin,Search,TrainFront,X} from "lucide-react";
+import {useCallback,useEffect,useRef,useState,type CSSProperties} from "react";
+import {Check,ChevronDown,CircleHelp,LoaderCircle,MapPin,RotateCw,Search,X} from "lucide-react";
 import AtlasMap from "./atlas-map";
-import {MODE_LABEL,formatDuration,mapLink,withinShenzhen,type Coord,type Mode,type Office,type Place,type Plan,type Verification} from "@/lib/commute";
+import RouteResults from "./route-results";
+import RulesDialog from "./rules-dialog";
+import AnimatedCollapse from "./animated-collapse";
+import {assessMapPick} from "@/lib/coverage";
+import {MODE_LABEL,QUERY_STAGE_LABEL,withinShenzhen,type Coord,type Mode,type Office,type Place,type Plan,type QueryStage,type Verification} from "@/lib/commute";
 import type {Coverage,RailData,Validation} from "@/lib/map-types";
-const modes:Mode[]=["walking","bicycling","metro"];
-const ModeIcon=({mode,size=18}:{mode:Mode;size?:number})=>mode==="walking"?<Footprints size={size}/>:mode==="bicycling"?<Bike size={size}/>:<TrainFront size={size}/>;
-const date=(v?:string)=>v?new Intl.DateTimeFormat("zh-CN",{month:"2-digit",day:"2-digit",timeZone:"Asia/Shanghai"}).format(new Date(v)):"准备中";
 
-export default function CommuteApp(){
-  const [offices,setOffices]=useState<Office[]>([]),[activeId,setActiveId]=useState("innovation"),[showAll,setShowAll]=useState(false);
+const modes:Mode[]=["walking","bicycling","metro"];
+const officeNames:Record<string,string>={innovation:"深圳湾",jinghu:"景湖",prince:"太子"};
+const officeOrder=Object.keys(officeNames);
+const SETTINGS_VISITED_KEY="shenzhen-housing-map:settings-visited";
+const validPlans=(plans:Plan[]=[])=>plans.filter(plan=>plan.mode!=="metro"||plan.metroMethod==="full"||plan.legs.find(leg=>leg.mode==="metro")?.from===plan.title.replace(/^经/,"")).sort((a,b)=>Number(b.qualified)-Number(a.qualified)||a.duration-b.duration);
+
+export default function CommuteApp() {
+  const [offices,setOffices]=useState<Office[]>([]);
+  const [activeId,setActiveId]=useState("innovation");
   const [layers,setLayers]=useState<Record<Mode,boolean>>({walking:true,bicycling:true,metro:true});
   const [coverage,setCoverage]=useState<Coverage|null>(null),[rail,setRail]=useState<RailData|null>(null),[validation,setValidation]=useState<Validation|null>(null);
-  const [query,setQuery]=useState(""),[places,setPlaces]=useState<Place[]>([]),[searching,setSearching]=useState(false),[searchError,setSearchError]=useState(""),[searchOpen,setSearchOpen]=useState(false),[option,setOption]=useState(-1);
-  const [home,setHome]=useState<Place|null>(null),[results,setResults]=useState<Record<string,Verification>>({}),[loading,setLoading]=useState(false),[currentOffice,setCurrentOffice]=useState(""),[selectedPlan,setSelectedPlan]=useState<Plan|null>(null),[error,setError]=useState("");
-  const [info,setInfo]=useState(false),[mobileOpen,setMobileOpen]=useState(true),[tab,setTab]=useState<"explore"|"result">("explore");
-  const manualPlan=useRef(false);
-  const abort=useRef<AbortController|null>(null),requestId=useRef(0),railRef=useRef<RailData|null>(null),activeRef=useRef(activeId);activeRef.current=activeId;
-  const active=offices.find(o=>o.id===activeId),result=results[activeId];
-  const scope=(id=activeId)=>[id,...offices.filter(o=>o.id!==id).map(o=>o.id)];
-  const plans=[...(result?.plans??[])].sort((a,b)=>Number(b.qualified)-Number(a.qualified)||a.duration-b.duration),best=plans.find(p=>p.qualified);
-  useEffect(()=>{const c=new AbortController();Promise.all([fetch("/api/config",{signal:c.signal}).then(r=>r.json()),fetch("/data/coverage.json",{signal:c.signal}).then(r=>r.ok?r.json():null),fetch("/data/metro-plans.json",{signal:c.signal}).then(r=>r.ok?r.json():null),fetch("/data/validation.json",{signal:c.signal}).then(r=>r.ok?r.json():null)]).then(([config,cov,metro,val])=>{setOffices((config as {offices:Office[]}).offices??[]);setCoverage(cov as Coverage|null);setRail(metro as RailData|null);railRef.current=metro as RailData|null;setValidation(val as Validation|null);}).catch(e=>{if(e.name!=="AbortError")setError("数据暂时未加载，请刷新重试。");});return()=>{c.abort();abort.current?.abort();};},[]);
-  useEffect(()=>{if(!info)return;const handler=(e:KeyboardEvent)=>{if(e.key==="Escape")setInfo(false);};window.addEventListener("keydown",handler);return()=>window.removeEventListener("keydown",handler);},[info]);
+  const [query,setQuery]=useState(""),[places,setPlaces]=useState<Place[]>([]);
+  const [searching,setSearching]=useState(false),[searchOpen,setSearchOpen]=useState(false),[searchError,setSearchError]=useState(""),[option,setOption]=useState(-1);
+  const [searchRequest,setSearchRequest]=useState<{query:string}|null>(null);
+  const [home,setHome]=useState<Place|null>(null),[results,setResults]=useState<Record<string,Verification>>({});
+  const [pendingLocation,setPendingLocation]=useState<Coord|null>(null);
+  const [pendingName,setPendingName]=useState("");
+  const [loading,setLoading]=useState(false),[currentOffice,setCurrentOffice]=useState(""),[queryStopped,setQueryStopped]=useState(false);
+  const [queryStage,setQueryStage]=useState<QueryStage>("surface");
+  const [selectedPlan,setSelectedPlan]=useState<Plan|null>(null),[error,setError]=useState("");
+  const [info,setInfo]=useState(false),[mobileOpen,setMobileOpen]=useState(true),[panelHeight,setPanelHeight]=useState(360);
+  const [settingsOpen,setSettingsOpen]=useState(false);
+  const settingsInitialized=useRef(false);
+  const panel=useRef<HTMLDivElement>(null),searchInput=useRef<HTMLInputElement>(null),manualPlan=useRef(false);
+  const abort=useRef<AbortController|null>(null),requestId=useRef(0),settled=useRef(new Set<string>());
+  const railRef=useRef<RailData|null>(null),activeRef=useRef(activeId);
+  activeRef.current=activeId;
+  const result=results[activeId],plans=validPlans(result?.plans);
 
-  const verify=useCallback(async(place:Place,ids:string[])=>{
-    abort.current?.abort();const c=new AbortController();abort.current=c;const token=++requestId.current;
-    manualPlan.current=false;setLoading(true);setError("");setResults({});setSelectedPlan(null);setTab("result");setMobileOpen(true);
-    try{
-      const response=await fetch("/api/verify",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:place.location,name:place.name,officeIds:ids}),signal:c.signal});
-      if(!response.ok){const j=await response.json() as {error?:string};throw new Error(j.error??"路线查询失败");}if(!response.body)throw new Error("未取得路线结果");
+  useEffect(()=>{
+    if(settingsInitialized.current)return;
+    settingsInitialized.current=true;
+    try {
+      setSettingsOpen(localStorage.getItem(SETTINGS_VISITED_KEY)!=="1");
+      localStorage.setItem(SETTINGS_VISITED_KEY,"1");
+    } catch {
+      setSettingsOpen(true);
+    }
+  },[]);
+
+  useEffect(()=>{
+    const controller=new AbortController();
+    Promise.all([
+      fetch("/api/config",{signal:controller.signal}).then(response=>response.json()),
+      fetch("/data/coverage.json",{signal:controller.signal}).then(response=>response.ok?response.json():null),
+      fetch("/data/metro-plans.json",{signal:controller.signal}).then(response=>response.ok?response.json():null),
+      fetch("/data/validation.json",{signal:controller.signal}).then(response=>response.ok?response.json():null)
+    ]).then(([config,cov,metro,val])=>{
+      setOffices((config as {offices:Office[]}).offices??[]);
+      setCoverage(cov as Coverage|null);setRail(metro as RailData|null);railRef.current=metro as RailData|null;setValidation(val as Validation|null);
+    }).catch(reason=>{if(reason.name!=="AbortError")setError("数据未能加载，请刷新重试。");});
+    return()=>{controller.abort();abort.current?.abort();};
+  },[]);
+
+  useEffect(()=>{
+    if(!panel.current)return;
+    const observer=new ResizeObserver(entries=>setPanelHeight(Math.ceil(entries[0].contentRect.height)));
+    observer.observe(panel.current);
+    return()=>observer.disconnect();
+  },[]);
+
+  useEffect(()=>{
+    const media=window.matchMedia("(max-width: 700px)");
+    const update=()=>{if(!media.matches)setMobileOpen(true);};
+    media.addEventListener("change",update);
+    return()=>media.removeEventListener("change",update);
+  },[]);
+
+  const verify=useCallback(async(place:Place,ids:string[],resetResults=false)=>{
+    if(!ids.length)return;
+    abort.current?.abort();
+    const controller=new AbortController();abort.current=controller;const token=++requestId.current;
+    if(resetResults)settled.current.clear();
+    setResults(previous=>{
+      const next=resetResults?{}:{...previous};
+      for(const id of ids)next[id]={officeId:id,plans:[],checked:0,complete:false,errors:[],measuredAt:new Date().toISOString()};
+      return next;
+    });
+    if(resetResults||ids.includes(activeRef.current)){manualPlan.current=false;setSelectedPlan(null);}
+    setLoading(true);setQueryStage("surface");setQueryStopped(false);setError("");setMobileOpen(true);setCurrentOffice(ids[0]);
+    try {
+      const response=await fetch("/api/verify",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:place.location,name:place.name,officeIds:ids}),signal:controller.signal});
+      if(!response.ok){const data=await response.json() as {error?:string};throw new Error(data.error??"路线查询失败，请重试。");}
+      if(!response.body)throw new Error("未取得路线结果，请重试。");
       const reader=response.body.getReader(),decoder=new TextDecoder();let pending="";
       const handle=(event:any)=>{
         if(token!==requestId.current)return;
-        if(event.type==="office-start"){setCurrentOffice(event.officeId);setResults(prev=>({...prev,[event.officeId]:{officeId:event.officeId,plans:[],checked:0,complete:false,errors:[],measuredAt:new Date().toISOString()}}));}
-        if(event.type==="plan"){
-          const p=event.plan as Plan;p.originalReferenceDuration=event.originalTotalDuration;
-          if(event.preparedPlanId){const base=Object.values(railRef.current?.plans[p.officeId]??{}).find(b=>b.id===event.preparedPlanId);if(base)p.legs=p.legs.map((l,i)=>i>0?{...l,paths:base.legs[i-1]?.paths??l.paths}:l);}
-          setResults(prev=>{const old=prev[p.officeId]??{officeId:p.officeId,plans:[],checked:0,complete:false,errors:[],measuredAt:p.measuredAt};return {...prev,[p.officeId]:{...old,plans:[...old.plans.filter(x=>x.id!==p.id),p]}};});
-          if(!manualPlan.current&&p.qualified&&p.officeId===activeRef.current)setSelectedPlan(old=>old&&old.duration<=p.duration?old:p);
+        if(event.type==="office-start"){
+          settled.current.delete(event.officeId);setCurrentOffice(event.officeId);setQueryStage("surface");
+          setResults(previous=>({...previous,[event.officeId]:{officeId:event.officeId,plans:[],checked:0,complete:false,errors:[],measuredAt:new Date().toISOString()}}));
         }
-        if(event.type==="office-result")setResults(prev=>{const next=event.result as Verification;next.plans=next.plans.map(p=>prev[next.officeId]?.plans.find(old=>old.id===p.id)??p);return {...prev,[next.officeId]:next};});
+        if(event.type==="stage"&&Object.hasOwn(QUERY_STAGE_LABEL,event.stage))setQueryStage(event.stage as QueryStage);
+        if(event.type==="local-search")setResults(previous=>{
+          const old=previous[event.officeId];
+          return old?{...previous,[event.officeId]:{...old,localSearch:event.localSearch}}:previous;
+        });
+        if(event.type==="plan"){
+          const plan=event.plan as Plan;
+          plan.originalReferenceDuration=event.originalTotalDuration;plan.originalReferenceScope=event.originalReferenceScope;
+          if(event.preparedPlanId){
+            const base=Object.values(railRef.current?.plans[plan.officeId]??{}).find(candidate=>candidate.id===event.preparedPlanId);
+            if(base)plan.legs=plan.legs.map((leg,index)=>index>0?{...leg,paths:base.legs[index-1]?.paths??leg.paths}:leg);
+          }
+          setResults(previous=>{
+            const old=previous[plan.officeId]??{officeId:plan.officeId,plans:[],checked:0,complete:false,errors:[],measuredAt:plan.measuredAt};
+            return {...previous,[plan.officeId]:{...old,plans:[...old.plans.filter(candidate=>candidate.id!==plan.id),plan]}};
+          });
+          if(!manualPlan.current&&plan.qualified&&plan.officeId===activeRef.current)setSelectedPlan(old=>old&&old.officeId===plan.officeId&&old.duration<=plan.duration?old:plan);
+        }
+        if(event.type==="office-result"){
+          const next=event.result as Verification;settled.current.add(next.officeId);
+          setResults(previous=>({...previous,[next.officeId]:{...next,plans:next.plans.map(plan=>previous[next.officeId]?.plans.find(old=>old.id===plan.id)??plan)}}));
+        }
         if(event.type==="error")setError(event.message);
       };
-      while(true){const {done,value}=await reader.read();if(done)break;pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop()??"";for(const line of lines)if(line.trim())handle(JSON.parse(line));}pending+=decoder.decode();if(pending.trim())handle(JSON.parse(pending));
-    }catch(e){if((e as Error).name!=="AbortError"&&token===requestId.current)setError(e instanceof Error?e.message:"查询暂未完成，请重试。");}
-    finally{if(token===requestId.current){setLoading(false);setCurrentOffice("");}}
+      while(true){
+        const {done,value}=await reader.read();if(done)break;
+        pending+=decoder.decode(value,{stream:true});const lines=pending.split("\n");pending=lines.pop()??"";
+        for(const line of lines)if(line.trim())handle(JSON.parse(line));
+      }
+      pending+=decoder.decode();if(pending.trim())handle(JSON.parse(pending));
+    } catch(reason) {
+      if((reason as Error).name!=="AbortError"&&token===requestId.current)setError(reason instanceof Error?reason.message:"查询未完成，请重试。");
+    } finally {
+      if(token===requestId.current){setLoading(false);setCurrentOffice("");}
+    }
   },[]);
-  const choose=useCallback((place:Place)=>{const point={...place,location:place.entrance??place.location};setHome(point);setQuery(place.name);setSearchOpen(false);setPlaces([]);verify(point,showAll?scope():[activeId]);},[verify,showAll,offices,activeId]);
+
+  const choose=useCallback((place:Place)=>{
+    const point={...place,location:place.entrance??place.location};
+    setPendingLocation(null);setPendingName("");setHome(point);setQuery(place.name);setSearchOpen(false);setSearchRequest(null);setSearching(false);searchInput.current?.blur();
+    verify(point,[activeId],true);
+  },[verify,activeId]);
+
   useEffect(()=>{
-    const value=query.trim();if(value.length<2||!searchOpen){setPlaces([]);setSearching(false);return;}
-    const c=new AbortController();setSearching(true);setSearchError("");const timer=setTimeout(async()=>{try{const r=await fetch(`/api/search?q=${encodeURIComponent(value)}`,{signal:c.signal});const data=await r.json() as {error?:string;places?:Place[]};if(!r.ok)throw new Error(data.error??"搜索暂时失败");setPlaces(data.places??[]);setOption(-1);}catch(e){if((e as Error).name!=="AbortError")setSearchError((e as Error).message??"搜索暂时失败");}finally{if(!c.signal.aborted)setSearching(false);}},650);return()=>{clearTimeout(timer);c.abort();};
-  },[query,searchOpen]);
-  function switchOffice(id:string){setActiveId(id);setSelectedPlan(null);if(home&&!results[id])verify(home,showAll?scope(id):[id]);else if(home)setSelectedPlan(results[id]?.plans.find(p=>p.qualified)??null);}
-  function reset(){abort.current?.abort();requestId.current++;setLoading(false);setHome(null);setResults({});setSelectedPlan(null);setTab("explore");setQuery("");setError("");}
-  function pick(c:Coord){if(!withinShenzhen(c)){setError("请选择深圳范围内的位置。");return;}choose({id:"map-point",name:"地图选定位置",address:"可拖动标记修正到小区门口",location:c});}
+    if(!searchRequest)return;
+    const controller=new AbortController();
+    (async()=>{
+      try {
+        const response=await fetch(`/api/search?q=${encodeURIComponent(searchRequest.query)}`,{signal:controller.signal});
+        const data=await response.json() as {error?:string;places?:Place[]};
+        if(!response.ok)throw new Error(data.error??"搜索失败，请重试。");
+        if(!controller.signal.aborted)setPlaces(data.places??[]);
+      } catch(reason) {
+        if(!controller.signal.aborted)setSearchError((reason as Error).message);
+      } finally {if(!controller.signal.aborted)setSearching(false);}
+    })();
+    return()=>controller.abort();
+  },[searchRequest]);
+
+  function submitSearch(){
+    const value=query.trim();if(value.length<2)return;
+    setPlaces([]);setOption(-1);setSearching(true);setSearchError("");setSearchOpen(true);setSearchRequest({query:value});
+  }
+
+  useEffect(()=>{
+    if(option>=0)document.getElementById(`place-option-${option}`)?.scrollIntoView({block:"nearest"});
+  },[option]);
+
+  useEffect(()=>{
+    if(!pendingLocation)return;
+    const cancel=(event:KeyboardEvent)=>{if(event.key==="Escape"){setPendingLocation(null);setPendingName("");setMobileOpen(true);}};
+    window.addEventListener("keydown",cancel);
+    return()=>window.removeEventListener("keydown",cancel);
+  },[pendingLocation]);
+
+  function stopVerification(){
+    abort.current?.abort();requestId.current++;setLoading(false);setCurrentOffice("");setQueryStopped(true);
+  }
+  function switchOffice(id:string){
+    if(id===activeId)return;
+    setActiveId(id);activeRef.current=id;manualPlan.current=false;
+    setSelectedPlan(validPlans(results[id]?.plans).find(plan=>plan.qualified)??null);
+    if(home&&!settled.current.has(id))verify(home,[id]);
+  }
+  function reset(){
+    abort.current?.abort();requestId.current++;settled.current.clear();
+    setLoading(false);setCurrentOffice("");setQueryStopped(false);setPendingLocation(null);setPendingName("");setHome(null);setResults({});setSelectedPlan(null);
+    setQuery("");setPlaces([]);setSearchRequest(null);setSearching(false);setSearchOpen(false);setError("");setSearchError("");searchInput.current?.focus();
+  }
+  function pick(location:Coord,name?:string){
+    if(!withinShenzhen(location)){setError("请选择深圳范围内的位置。");return;}
+    if(loading)stopVerification();
+    setPendingLocation(location);setPendingName(name?.trim().slice(0,120)||"地图选点");setSearchOpen(false);
+    if(window.matchMedia("(max-width: 700px)").matches)setMobileOpen(false);
+  }
+  function confirmPick(){
+    if(pendingLocation&&assessMapPick(coverage,activeId,pendingLocation).allowed)choose({id:"map-point",kind:"map",name:pendingName,address:"",location:pendingLocation});
+  }
+  const showOptions=searchOpen&&searchRequest?.query===query.trim();
+  const activeLoading=loading&&(!settled.current.has(activeId)||currentOffice===activeId);
+
   return <main className="atlas-app">
-    <header className="app-header"><a className="brand" href="/" aria-label="深圳房补地图首页"><span className="brand-icon"><MapPin size={23} strokeWidth={1.8}/><span/></span><span className="brand-name">深圳房补地图</span></a><button className="header-info" onClick={()=>setInfo(true)}><CircleHelp size={17}/><span>规则与数据</span></button></header>
-    <div className="workspace"><aside className={`side-panel ${mobileOpen?"is-open":""}`}><button className="mobile-panel-handle" onClick={()=>setMobileOpen(!mobileOpen)} aria-label="展开或收起面板"><span/></button><div className="panel-scroll">
-      {tab==="result"&&<button className="back-button" onClick={()=>setTab("explore")}><ArrowLeft size={15}/>返回地图图层</button>}
-      <section className="office-section"><div className="section-label"><span>办公工区</span><label className="all-toggle"><input type="checkbox" checked={showAll} onChange={e=>{setShowAll(e.target.checked);if(home)verify(home,e.target.checked?scope():[activeId]);}}/><span className="mini-switch"/>叠加查看</label></div><div className={`office-list ${tab==="result"?"compact":""}`}>{offices.map((o,i)=><button key={o.id} className={`office-card ${o.id===activeId?"selected":""}`} onClick={()=>switchOffice(o.id)}><span className="office-number">0{i+1}</span><span className="office-card-text"><strong>{o.name}</strong></span>{results[o.id]?.plans.some(p=>p.qualified)?<span className="office-pass"><Check size={14}/></span>:<span className={`office-radio ${o.id===activeId?"checked":""}`}><span/></span>}</button>)}</div></section>
-      <section className="search-section"><div className="section-label"><span>住在哪里</span></div><div className="search-wrap"><div className={`search-input ${searchOpen?"focused":""}`}><Search size={18}/><input value={query} placeholder="搜索小区、街道或地址" aria-label="搜索小区或地址" role="combobox" aria-expanded={searchOpen&&places.length>0} aria-controls="place-options" aria-autocomplete="list" autoComplete="off" onFocus={()=>setSearchOpen(true)} onChange={e=>{setQuery(e.target.value);setSearchOpen(true);}} onKeyDown={e=>{if(e.key==="ArrowDown"){e.preventDefault();setOption(i=>Math.min(i+1,places.length-1));}if(e.key==="ArrowUp"){e.preventDefault();setOption(i=>Math.max(i-1,0));}if(e.key==="Enter"&&!e.nativeEvent.isComposing&&places.length){e.preventDefault();choose(places[Math.max(0,option)]);}if(e.key==="Escape")setSearchOpen(false);}}/>{searching?<LoaderCircle className="spin" size={16}/>:query?<button aria-label="清除搜索" onClick={()=>{if(home)reset();else{setQuery("");setPlaces([]);setSearchOpen(false);}}}><X size={15}/></button>:null}</div>
-        {searchOpen&&(places.length>0||searchError||(!searching&&query.length>=2))&&<div className="search-options" id="place-options" role="listbox">{searchError?<p className="search-message">{searchError}</p>:places.length?places.map((p,i)=><button role="option" aria-selected={i===option} key={p.id} className={i===option?"highlighted":""} onMouseDown={e=>e.preventDefault()} onClick={()=>choose(p)}><MapPin size={16}/><span><strong>{p.name}</strong><small>{p.address}</small></span><ArrowUpRight size={14}/></button>):<p className="search-message">没有找到匹配地点，也可以点击地图选点。</p>}</div>}</div>
-        {!home?<div className="search-examples">{["蔚蓝海岸","桂庙新村","南水村"].map(n=><button key={n} onClick={()=>{setQuery(n);setSearchOpen(true);}}>{n}</button>)}</div>:<div className="selected-home"><MapPin size={14}/><span>{home.entrance?"已使用地图入口坐标":"可拖动标记修正至小区门口"}</span><button onClick={()=>verify(home,showAll?scope():[activeId])} disabled={loading}>重新核验</button></div>}
-      </section>
-      {tab==="result"&&home?<section className="results-section" aria-live="polite"><div className={`result-banner ${best?"pass":loading?"pending":"uncertain"}`}><span className="result-banner-icon">{best?<CheckCheck size={23}/>:loading?<LoaderCircle className="spin" size={22}/>:<CircleHelp size={22}/>}</span><div><strong>{best?"找到符合时限的方案":loading?"正在逐段核验":error||result?.errors.length||!plans.length?"尚未完成地点核验":"当前已查方案未满足时限"}</strong><p>{best?active?.name:loading?`正在查询${offices.find(o=>o.id===currentOffice)?.name??"高德路线"}`:"可修正入口位置，或补充核验"}</p></div></div>{error&&<p className="query-error">{error}</p>}
-        <div className="route-cards">{plans.map(p=><div className={`route-card ${selectedPlan?.id===p.id?"active":""}`} key={p.id}><button className="route-card-main" onClick={()=>{manualPlan.current=true;setSelectedPlan(selectedPlan?.id===p.id?null:p);}}><span className={`mode-badge ${p.mode}`}><ModeIcon mode={p.mode}/></span><span className="route-card-title"><strong>{p.title}</strong></span><span className="route-card-time"><strong>{formatDuration(p.duration)}</strong><small className={p.qualified?"text-green":""}>{p.qualified?"符合时限":`超出${formatDuration(p.duration-p.limit)}`}</small></span><ChevronDown size={15} className={selectedPlan?.id===p.id?"rotated":""}/></button>
-          {selectedPlan?.id===p.id&&<div className="route-details"><div className="route-timeline">{p.legs.map((l,i)=><div className="timeline-leg" key={i}><span className={`timeline-node ${l.mode}`}><ModeIcon mode={l.mode} size={12}/></span><div><strong>{l.from}<ArrowRight size={12}/>{l.to}</strong><div className="leg-meta"><span>{l.label}</span><b>{formatDuration(l.duration)}</b></div>{l.mode==="metro"&&<p className="rail-instructions">{l.instructions?.filter(s=>s.includes("地铁")).join(" / ")}</p>}<a href={mapLink(l.kind==="transfer"?{...l,mode:"metro",origin:p.legs.find(x=>x.mode==="metro")!.origin,destination:p.legs.filter(x=>x.mode==="metro").at(-1)!.destination,from:p.legs.find(x=>x.mode==="metro")!.from,to:p.legs.filter(x=>x.mode==="metro").at(-1)!.to}:l)} target="_blank" rel="noreferrer">{l.kind==="transfer"?"高德查看换乘方案":l.mode==="bicycling"?"高德 App 复核":"高德复核此段"}<ArrowUpRight size={11}/></a></div></div>)}</div><div className="calculation"><span>计算过程</span><strong>{p.legs.map(l=>(l.duration/60).toFixed(2)).join(" + ")} = {(p.duration/60).toFixed(2)} 分钟</strong><small>{p.mode==="metro"?"地面接驳＋地铁路段＋站内换乘。":"按高德完整路线耗时比较。"}</small></div>{p.originalReferenceDuration!=null&&<p className="plan-note">原始参考方案（站点至工区，不含住宅侧接驳）：{formatDuration(p.originalReferenceDuration)}。与上方自定义分段口径分别展示。</p>}{p.note&&<p className="plan-note">{p.note}</p>}<p className="plan-note">路线数据：{date(p.measuredAt)}{p.legs.some(l=>l.cached)?" · 含缓存":""}</p></div>}</div>)}</div>
-        {loading&&<div className="checking"><LoaderCircle className="spin" size={15}/><span>继续比较接驳方案…</span><button onClick={()=>{abort.current?.abort();setLoading(false);}}>停止查询</button></div>}{result?.errors.map((e,i)=><p className="result-note" key={i}>{e}</p>)}{!loading&&result&&!result.complete&&!best&&<p className="result-note">其他组合尚未穷举；未找到方案不等同于公司认定不符合。</p>}<button className="clear-result" onClick={reset}>清除选点，继续看范围<ArrowRight size={14}/></button>
-      </section>:<><section className="layer-section"><div className="section-label"><span>通勤范围图层</span><Layers2 size={15}/></div>{modes.map(m=><label key={m} className="layer-row"><span className={`mode-badge ${m}`}><ModeIcon mode={m}/></span><span className="layer-text"><strong>{MODE_LABEL[m]}</strong><small>{m==="walking"?"≤30分钟":"≤20分钟"}</small></span><input type="checkbox" checked={layers[m]} onChange={e=>setLayers(prev=>({...prev,[m]:e.target.checked}))}/><span className="layer-checkbox"><Check size={12}/></span></label>)}</section></>}
-    </div><footer className="panel-footer"><span className="status-dot"/><span>{date(coverage?.metadata.generatedAt)} 更新</span><button onClick={()=>setInfo(true)}>数据说明<ChevronRight size={12}/></button></footer></aside>
-    <AtlasMap offices={offices} activeId={activeId} showAll={showAll} layers={layers} coverage={coverage} home={home} plan={selectedPlan} onPick={pick} onInfo={()=>setInfo(true)} mobileOpen={mobileOpen}/><button className="mobile-toggle" onClick={()=>setMobileOpen(!mobileOpen)}><Search size={16}/>{mobileOpen?"收起面板，看地图":"查小区 / 切换工区"}</button></div>
-    {info&&<div className="modal-backdrop" onClick={()=>setInfo(false)}><section className="info-modal" role="dialog" aria-modal="true" aria-labelledby="info-title" onClick={e=>e.stopPropagation()}><button className="modal-close" onClick={()=>setInfo(false)} aria-label="关闭规则说明"><X size={20}/></button><h2 id="info-title">规则与数据</h2><p className="info-intro">通勤范围用于选房参考；房补申请仍需满足公司其他要求。</p><div className="info-rule-grid"><div><Footprints/><strong>30分钟</strong><span>全程步行</span></div><div><Bike/><strong>20分钟</strong><span>普通自行车</span></div><div><TrainFront/><strong>20分钟</strong><span>地铁＋地面接驳</span></div></div><h3>当前地铁计算口径</h3><p>小区门口到进站口的步行／骑行＋高德地铁路段耗时＋站内换乘＋出站口到工区的步行／骑行。首次进站和最终出站的站内步行不额外叠加，不另加候车；地铁路段字段不是独立列车时刻表。</p><p className="info-callout">这是自定义分段口径。公司提供的政策要求采用地图页面显示的分段时长，实际申请请用地图页面复核并保留多段截图。</p><p>地铁参考时刻：2026-11-09 09:00。使用高德复核时，请选择运营时段。</p><h3>范围如何生成</h3><p>固定路段提前计算，结合校准OSM路网生成范围。边界是估算，不代表每个点都已被高德核验。搜索或选点后，会查询具体地面路线并展示加总过程。</p><div className="data-facts"><span>路网网格 <b>{coverage?.metadata.resolutionMeters??"准备中"} 米</b></span><span>地铁参考站 <b>{rail?.processedStations.length??0} / {rail?.stationCount??351}</b></span><span>数据更新 <b>{date(coverage?.metadata.generatedAt)}</b></span></div>{validation&&<><h3>直达路线抽样验证</h3><p>小样本平均绝对误差：步行约{Math.round((validation.summary.walking?.meanAbsoluteErrorSeconds??0)/6)/10}分钟，骑行约{Math.round((validation.summary.bicycling?.meanAbsoluteErrorSeconds??0)/6)/10}分钟。样本误差不是所有地点的误差上限，临界地点须单独核验。</p></>}<h3>申请时还要注意</h3><p>小区门口到实际办公地点测量；不使用公交、电动车或摩托车。每月最低租住16个工作日的要求需另行满足。</p><div className="info-sources">地图与路线：高德开放平台 · 路网：<a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap contributors / ODbL</a></div></section></div>}
+    <div className={`workspace ${mobileOpen?"is-panel-open":""}`} style={{"--panel-height":`${panelHeight}px`} as CSSProperties}>
+      <div ref={panel} className={`panel-columns ${mobileOpen?"is-open":""}`} inert={!mobileOpen?true:undefined}>
+      <aside className="side-panel settings-panel" aria-label="工区与图层">
+        <button className="mobile-panel-handle" aria-label="收起面板" onClick={()=>setMobileOpen(false)}><span/></button>
+        <div className="panel-scroll">
+          <div className="panel-title"><h1><button className="settings-toggle" title={settingsOpen?"收起工区与图层":"展开工区与图层"} aria-expanded={settingsOpen} aria-controls="office-layer-settings" onClick={()=>setSettingsOpen(open=>!open)}><span>深圳房补地图</span><ChevronDown size={17} aria-hidden="true"/></button></h1><button className="icon-button" aria-label="规则与数据" title="规则与数据" onClick={()=>setInfo(true)}><CircleHelp size={18} aria-hidden="true"/></button></div>
+          <AnimatedCollapse open={settingsOpen} id="office-layer-settings">
+          <div className="settings-fields">
+          <fieldset className="office-section"><legend className="field-label">办公工区</legend>
+            <div className="office-cards">
+              {[...offices].sort((a,b)=>officeOrder.indexOf(a.id)-officeOrder.indexOf(b.id)).map(office=><label className="office-choice" key={office.id}>
+                <input type="radio" name="office" aria-label={office.name} checked={activeId===office.id} onChange={()=>switchOffice(office.id)}/>
+                <span className="office-radio" aria-hidden="true"><span/></span><span className="office-choice-name">{officeNames[office.id]??office.name}</span>
+              </label>)}
+              {!offices.length&&<span className="office-placeholder" role="status">加载工区…</span>}
+            </div>
+          </fieldset>
+          <fieldset className="layer-section"><legend className="field-label">范围图层</legend><div className="layer-chips">
+            {modes.map(mode=><label key={mode} className={`layer-chip ${mode}`}>
+              <input type="checkbox" aria-label={`${MODE_LABEL[mode]} ${mode==="walking"?"30":"20"}分钟`} checked={layers[mode]} onChange={event=>setLayers(previous=>({...previous,[mode]:event.target.checked}))}/>
+              <span className="layer-check" aria-hidden="true"><Check size={12}/></span><span>{mode==="walking"?"步行 30分":mode==="bicycling"?"骑行 20分":"地铁 20分"}</span>
+            </label>)}
+          </div></fieldset>
+          </div>
+          </AnimatedCollapse>
+        </div>
+      </aside>
+      <aside className="side-panel search-panel" aria-label="地点查询与分析">
+        <div className="panel-scroll">
+          <div className="search-section" onBlur={event=>{if(!event.currentTarget.contains(event.relatedTarget))setSearchOpen(false);}}>
+            <label className="field-label" htmlFor="place-query">居住地点</label>
+            <div className={`search-input ${searchOpen?"focused":""}`}>
+              <Search size={18} aria-hidden="true"/>
+              <input ref={searchInput} id="place-query" value={query} placeholder="搜索小区或地址" aria-label="搜索小区或地址" role="combobox" aria-expanded={showOptions} aria-controls="place-options" aria-activedescendant={option>=0&&places[option]?`place-option-${option}`:undefined} aria-autocomplete="list" aria-describedby={searchError?"search-error":undefined} autoComplete="off" enterKeyHint="search"
+                onFocus={()=>{if(searchRequest?.query===query.trim())setSearchOpen(true);}}
+                onChange={event=>{setQuery(event.target.value);setSearchOpen(false);setSearchRequest(null);setSearching(false);setSearchError("");setOption(-1);}}
+                onKeyDown={event=>{
+                  if(event.key==="Enter"){
+                    if(event.nativeEvent.isComposing||event.keyCode===229)return;event.preventDefault();
+                    if(showOptions&&option>=0&&places[option])choose(places[option]);else submitSearch();
+                  }
+                  if(event.key==="ArrowDown"&&searchRequest?.query===query.trim()&&places.length){event.preventDefault();setSearchOpen(true);setOption(index=>(index+1)%places.length);}
+                  if(event.key==="ArrowUp"&&searchRequest?.query===query.trim()&&places.length){event.preventDefault();setSearchOpen(true);setOption(index=>(index-1+places.length)%places.length);}
+                  if(event.key==="Escape"){setSearchOpen(false);setOption(-1);}
+                }}/>
+              {searching?<LoaderCircle className="spin" size={17} aria-label="正在搜索"/>:query?<button className="icon-button" aria-label="清除地点" onClick={reset}><X size={17}/></button>:null}
+            </div>
+            <AnimatedCollapse open={showOptions} className="search-reveal">
+            <div className="search-options" id="place-options" role="listbox" aria-label="搜索结果" aria-busy={searching}>
+              {searching?<p className="search-message" role="status">正在搜索…</p>:searchError?<p className="search-message query-error" id="search-error" role="alert">{searchError}</p>:places.length?places.map((place,index)=><button id={`place-option-${index}`} key={place.id} role="option" aria-selected={option===index} className={option===index?"highlighted":""} onMouseDown={event=>event.preventDefault()} onClick={()=>choose(place)}>
+                <MapPin size={17} aria-hidden="true"/><span><strong>{place.name}</strong><small>{place.address}</small></span>
+              </button>):searchRequest?<p className="search-message">未找到地点</p>:null}
+            </div>
+            </AnimatedCollapse>
+          </div>
+          {home&&<div className="selected-home"><span>拖动标记可调整入口</span><button className="text-button" onClick={()=>verify(home,[activeId])} disabled={loading}><RotateCw size={13} aria-hidden="true"/>重新核验</button></div>}
+          {home&&<RouteResults result={result} plans={plans} selectedPlan={selectedPlan} loading={activeLoading} queryStage={queryStage} stopped={queryStopped&&!settled.current.has(activeId)} error={error} onStop={stopVerification} onSelect={plan=>{manualPlan.current=true;setSelectedPlan(selectedPlan?.id===plan.id?null:plan);}}/>}
+          {!home&&error&&<p className="query-error" role="alert">{error}</p>}
+          {loading&&!activeLoading&&<div className="background-check" role="status"><LoaderCircle size={14} className="spin" aria-hidden="true"/><span>正在查询{QUERY_STAGE_LABEL[queryStage]}方案</span><button className="text-button" onClick={stopVerification}>停止</button></div>}
+        </div>
+      </aside>
+      </div>
+      <AtlasMap offices={offices} activeId={activeId} showAll={false} layers={layers} coverage={coverage} home={home} plan={selectedPlan} pendingLocation={pendingLocation} pendingName={pendingName} onPick={pick} onConfirmPick={confirmPick} onCancelPick={()=>{setPendingLocation(null);setPendingName("");setMobileOpen(true);}} mobileOpen={mobileOpen}/>
+      {!mobileOpen&&!pendingLocation&&<button className="mobile-toggle" onClick={()=>setMobileOpen(true)}><Search size={17} aria-hidden="true"/>查地点</button>}
+    </div>
+    <RulesDialog open={info} onClose={()=>setInfo(false)} coverage={coverage} rail={rail} validation={validation}/>
   </main>;
 }
