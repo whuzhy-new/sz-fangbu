@@ -38,7 +38,7 @@ export default function CommuteApp() {
   const [recentPlaces,setRecentPlaces]=useState<Place[]>([]),[favorites,setFavorites]=useState<Place[]>([]);
   const [savedOpen,setSavedOpen]=useState(false),[savedView,setSavedView]=useState<"recent"|"favorites">("recent");
   const settingsInitialized=useRef(false);
-  const panel=useRef<HTMLDivElement>(null),searchInput=useRef<HTMLInputElement>(null),manualPlan=useRef(false);
+  const panel=useRef<HTMLElement>(null),searchInput=useRef<HTMLInputElement>(null),manualPlan=useRef(false);
   const abort=useRef<AbortController|null>(null),requestId=useRef(0),settled=useRef(new Set<string>());
   const railRef=useRef<RailData|null>(null),activeRef=useRef(activeId);
   activeRef.current=activeId;
@@ -48,10 +48,10 @@ export default function CommuteApp() {
     if(settingsInitialized.current)return;
     settingsInitialized.current=true;
     try {
-      setSettingsOpen(localStorage.getItem(SETTINGS_VISITED_KEY)!=="1");
+      setSettingsOpen(!window.matchMedia("(max-width: 700px)").matches&&localStorage.getItem(SETTINGS_VISITED_KEY)!=="1");
       localStorage.setItem(SETTINGS_VISITED_KEY,"1");
     } catch {
-      setSettingsOpen(true);
+      setSettingsOpen(!window.matchMedia("(max-width: 700px)").matches);
     }
     try {
       const preferences=readPreferences(localStorage.getItem(PREFERENCES_KEY));
@@ -98,7 +98,7 @@ export default function CommuteApp() {
 
   useEffect(()=>{
     const media=window.matchMedia("(max-width: 700px)");
-    const update=()=>{if(!media.matches)setMobileOpen(true);};
+    const update=()=>{if(media.matches)setSettingsOpen(false);setMobileOpen(true);};
     media.addEventListener("change",update);
     return()=>media.removeEventListener("change",update);
   },[]);
@@ -115,6 +115,7 @@ export default function CommuteApp() {
     });
     if(resetResults||ids.includes(activeRef.current)){manualPlan.current=false;setSelectedPlan(null);}
     setLoading(true);setQueryStage("surface");setQueryStopped(false);setError("");setMobileOpen(true);setCurrentOffice(ids[0]);
+    if(window.matchMedia("(max-width: 700px)").matches)setSettingsOpen(false);
     try {
       const response=await fetch("/api/verify",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:place.location,name:place.name,poiId:placePoiId(place),officeIds:ids}),signal:controller.signal});
       if(!response.ok){const data=await response.json() as {error?:string};throw new Error(data.error??"路线查询失败，请重试。");}
@@ -220,7 +221,11 @@ export default function CommuteApp() {
     if(!withinShenzhen(location)){setError("请选择深圳范围内的位置。");return;}
     if(loading)stopVerification();
     setPendingLocation(location);setPendingName(name?.trim().slice(0,120)||"地图选点");setPendingPoiId(amapPoiId(poiId));setSearchOpen(false);
-    if(window.matchMedia("(max-width: 700px)").matches)setMobileOpen(false);
+    if(window.matchMedia("(max-width: 700px)").matches){setMobileOpen(false);setSettingsOpen(false);}
+  }
+  function toggleSettings(){
+    const open=!settingsOpen;setSettingsOpen(open);
+    if(window.matchMedia("(max-width: 700px)").matches&&!pendingLocation)setMobileOpen(!open);
   }
   function confirmPick(){
     if(pendingLocation&&assessMapPick(coverage,activeId,pendingLocation).allowed)choose({id:"map-point",kind:"map",name:pendingName,address:"",location:pendingLocation,poiId:pendingPoiId});
@@ -232,11 +237,10 @@ export default function CommuteApp() {
 
   return <main className="atlas-app">
     <div className={`workspace ${mobileOpen?"is-panel-open":""}`} style={{"--panel-height":`${panelHeight}px`} as CSSProperties}>
-      <div ref={panel} className={`panel-columns ${mobileOpen?"is-open":""}`} inert={!mobileOpen?true:undefined}>
-      <aside className="side-panel settings-panel" aria-label="工区与图层">
-        <button className="mobile-panel-handle" aria-label="收起面板" onClick={()=>setMobileOpen(false)}><span/></button>
+      <div className={`panel-columns ${mobileOpen?"is-open":""}`}>
+      <aside className={`side-panel settings-panel ${settingsOpen?"is-expanded":""}`} aria-label="工区与图层">
         <div className="panel-scroll">
-          <div className="panel-title"><h1><button className="settings-toggle" title={settingsOpen?"收起工区与图层":"展开工区与图层"} aria-expanded={settingsOpen} aria-controls="office-layer-settings" onClick={()=>setSettingsOpen(open=>!open)}><span>深圳房补地图</span><ChevronDown size={17} aria-hidden="true"/></button></h1><button className="icon-button" aria-label="规则与数据" title="规则与数据" onClick={()=>setInfo(true)}><CircleHelp size={18} aria-hidden="true"/></button></div>
+          <div className="panel-title"><h1><button className="settings-toggle" title={settingsOpen?"收起工区与图层":"展开工区与图层"} aria-expanded={settingsOpen} aria-controls="office-layer-settings" onClick={toggleSettings}><span>深圳房补地图</span><ChevronDown size={17} aria-hidden="true"/></button></h1><button className="icon-button" aria-label="规则与数据" title="规则与数据" onClick={()=>setInfo(true)}><CircleHelp size={18} aria-hidden="true"/></button></div>
           <AnimatedCollapse open={settingsOpen} id="office-layer-settings">
           <div className="settings-fields">
           <fieldset className="office-section"><legend className="field-label">办公工区</legend>
@@ -258,7 +262,8 @@ export default function CommuteApp() {
           </AnimatedCollapse>
         </div>
       </aside>
-      <aside className="side-panel search-panel" aria-label="地点查询与分析">
+      <aside ref={panel} id="place-query-panel" className="side-panel search-panel" aria-label="地点查询与分析" inert={!mobileOpen?true:undefined}>
+        <button className="mobile-panel-handle" aria-label="收起地点查询" onClick={()=>setMobileOpen(false)}><span/></button>
         <div className="panel-scroll">
           <div className="search-section" onBlur={event=>{if(!event.currentTarget.contains(event.relatedTarget)){setSearchOpen(false);setSavedOpen(false);}}}>
             <label className="field-label" htmlFor="place-query">居住地点</label>
@@ -297,7 +302,7 @@ export default function CommuteApp() {
       </aside>
       </div>
       <AtlasMap offices={offices} activeId={activeId} showAll={false} layers={layers} coverage={coverage} home={home} plan={selectedPlan} pendingLocation={pendingLocation} pendingName={pendingName} onPick={pick} onConfirmPick={confirmPick} onCancelPick={()=>{setPendingLocation(null);setPendingName("");setMobileOpen(true);}} mobileOpen={mobileOpen}/>
-      {!mobileOpen&&!pendingLocation&&<button className="mobile-toggle" onClick={()=>setMobileOpen(true)}><Search size={17} aria-hidden="true"/>查地点</button>}
+      {!mobileOpen&&!pendingLocation&&<button className="mobile-toggle" aria-controls="place-query-panel" aria-expanded={false} onClick={()=>{setSettingsOpen(false);setMobileOpen(true);}}><Search size={17} aria-hidden="true"/>查地点</button>}
     </div>
     <RulesDialog open={info} onClose={()=>setInfo(false)} coverage={coverage} rail={rail} validation={validation}/>
   </main>;

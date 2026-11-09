@@ -23,7 +23,7 @@ export default function AtlasMap({offices,activeId,showAll,layers,coverage,home,
   const pendingAssessment=useMemo(()=>pendingLocation?assessCoverage(coverage,activeId,pendingLocation,COVERAGE_EDGE_METERS):null,[coverage,activeId,pendingLocation]);
   const pendingPermission=useMemo(()=>pendingLocation?assessMapPick(coverage,activeId,pendingLocation):null,[coverage,activeId,pendingLocation]);
   const padding=()=>{
-    const panels=document.querySelector(".panel-columns")?.getBoundingClientRect(),canvas=container.current?.getBoundingClientRect();
+    const panels=document.querySelector(window.innerWidth<=700?".search-panel":".panel-columns")?.getBoundingClientRect(),canvas=container.current?.getBoundingClientRect();
     // AMap's order is top, bottom, left, right (not CSS shorthand).
     const left=window.innerWidth<=700?24:(panels?.right??696)-(canvas?.left??0)+32;
     if(pendingLocation)return [Math.min(320,(canvas?.height??600)-80),56,left,window.innerWidth<=700?24:64];
