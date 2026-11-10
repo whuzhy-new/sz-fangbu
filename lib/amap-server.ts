@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { polyline, surfaceDuration, type Coord, type Leg } from "./commute";
-import { fullMetroLeg } from "./full-metro";
+import { fullMetroLeg, type FullMetroLeg } from "./full-metro";
 import {surfaceRouteParams,transitRouteParams} from "./amap-route-params";
 
 export const METRO_DEPARTURE = {date:"2026-11-09",time:"09-00",label:"2026-11-09 09:00"};
@@ -82,7 +82,7 @@ export async function surfaceLeg(mode: "walking" | "bicycling", origin: Coord, d
   return {mode,label:mode === "walking" ? "步行" : "自行车",origin,destination,from,to,...identity.endpoints,duration,distance:Number(path.distance),paths:(path.steps ?? []).map((s:Json) => polyline(s.polyline)).filter((p:Coord[])=>p.length>1),instructions:(path.steps??[]).map((s:Json)=>String(s.instruction??"")).filter(Boolean),source:"amap",measuredAt:new Date(createdAt).toISOString(),cached};
 }
 
-export async function fullMetro(origin:Coord,destination:Coord,from:string,to:string,options:RouteRequestOptions={}):Promise<Leg|null> {
+export async function fullMetro(origin:Coord,destination:Coord,from:string,to:string,options:RouteRequestOptions={}):Promise<FullMetroLeg|null> {
   const identity=transitRouteParams(origin,destination,options);
   const {data,createdAt,cached}=await amap("v5/direction/transit/integrated",{
     ...identity.params,

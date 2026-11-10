@@ -19,8 +19,8 @@ const offices=[{id:'innovation',name:'创新工区',poiId:'B0OFFICE01',walkingId
 const leg=(mode,duration,origin,destination,from,to)=>({mode,duration,origin,destination,from,to,
   label:mode,distance:100,paths:[],source:'amap',measuredAt});
 
-async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,elapsedPerCall=0}={}){
-  const calls=[],work=[];
+async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,elapsedPerCall=0,recommendedMetro,recommendedTail=150}={}){
+  const calls=[],work=[],requests=[];
   let elapsed=0,budget,accessIndex=0;
   const deadline=deadlineController??new AbortController();
   const advance=()=>{elapsed+=elapsedPerCall;if(elapsed>=budget)deadline.abort();};
@@ -44,9 +44,11 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
       MapApiError,METRO_DEPARTURE:{label:'2026-11-09 09:00'},
       async surfaceLeg(mode,origin,destination,from,to,options){
         const office=offices.find(o=>o.name===to);
-        calls.push(`${office?.id??'access'}:${mode}`);
+        const tail=office&&from===recommendedMetro?.exit.name;
+        calls.push(`${tail?'tail':office?.id??'access'}:${mode}`);
+        requests.push({mode,origin,destination,from,to,options});
         work.push(calls.at(-1));advance();
-        const duration=office?(surface[office.id]?.[mode]??(mode==='walking'?1830:1230)):(Array.isArray(access)?access[Math.min(accessIndex++,access.length-1)]:access);
+        const duration=tail?(recommendedTail!==null&&typeof recommendedTail==='object'?recommendedTail[mode]:recommendedTail):office?(surface[office.id]?.[mode]??(mode==='walking'?1830:1230)):(Array.isArray(access)?access[Math.min(accessIndex++,access.length-1)]:access);
         if(office&&abortAfterSurface)deadlineController.abort();
         if(duration==='error')throw new MapApiError('地图查询失败');
         if(duration?.error)throw new MapApiError('接驳查询暂未完成',duration.error);
@@ -58,7 +60,7 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
         work.push(calls.at(-1));advance();
         const duration=direct[office.id]??1230;
         if(duration==='error')throw new MapApiError('完整地铁查询失败');
-        return {...leg('metro',duration,origin,destination,from,to),kind:'full-transit',...transitRouteParams(origin,destination,options).endpoints};
+        return {...leg('metro',duration,origin,destination,from,to),kind:'full-transit',recommendedMetro,...transitRouteParams(origin,destination,options).endpoints};
       }
     }
   };
@@ -81,8 +83,70 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
   const events=(await response.text()).trim().split('\n').map(JSON.parse);
   assert.equal(events.at(-1).type,'done');
   assert.ok(!events.some(e=>e.type==='error'));
-  return {calls,work,elapsed,events,results:events.filter(e=>e.type==='office-result').map(e=>e.result)};
+  return {calls,work,requests,elapsed,events,results:events.filter(e=>e.type==='office-result').map(e=>e.result)};
 }
+
+const recommendation=()=>({entry:{stationName:'南油',name:'南油地铁站0-1口',location:[point[0]+.0001,point[1]]},
+  exit:{stationName:'粤海门',name:'粤海门E口',location:[113.945531,22.532695]},
+  legs:[leg('metro',750,point,[113.945531,22.532695],'南油站','粤海门站')]});
+
+test('the complete journey gates are proved before loading or ranking the local road network',async()=>{
+  const rec=recommendation();
+  const {calls,work,requests,results:[result]}=await verify({recommendedMetro:rec,entryCount:2});
+  assert.deepEqual(calls,['innovation:walking','innovation:bicycling','innovation:direct','access:walking','tail:walking']);
+  assert.ok(!work.includes('local-model'));
+  const plan=result.plans.find(p=>p.id==='innovation-metro-recommended');
+  assert.ok(plan.qualified);
+  assert.equal(plan.duration,1140);
+  assert.deepEqual(plan.legs.map(l=>l.duration),[180,780,180]);
+  assert.equal(requests[2].to,rec.entry.name);
+  assert.equal(requests[2].options.destinationPoiId,'B0ENTRY01');
+  assert.equal(requests[3].from,rec.exit.name);
+  assert.equal(requests[3].options.originPoiId,'B0EXIT0001');
+  const rail=new URL(commute.mapLink(plan.legs[1]));
+  assert.equal(rail.searchParams.get('sid'),'nanyou-0');
+  assert.equal(rail.searchParams.get('did'),'yuehaimen');
+  assert.equal(result.plans.find(p=>p.metroMethod==='full').legs[0].recommendedMetro,undefined);
+});
+
+test('recommended gates compare mixed walking/cycling at both ends before trying other stations',async()=>{
+  const {calls,work,results:[result]}=await verify({recommendedMetro:recommendation(),entryCount:2,access:[600,200],recommendedTail:{walking:150,bicycling:500}});
+  assert.deepEqual(calls.slice(3),['access:walking','tail:walking','access:bicycling','tail:bicycling']);
+  assert.ok(!work.includes('local-model'));
+  const plan=result.plans.find(p=>p.id==='innovation-metro-recommended');
+  assert.ok(plan.qualified);
+  assert.deepEqual(plan.legs.map(l=>l.mode),['bicycling','metro','walking']);
+  assert.equal(plan.duration,1140);
+});
+
+test('recommended egress uses the exact API gate even when the prepared best tail differs',async()=>{
+  const rec=recommendation();
+  rec.exit={...rec.exit,name:'粤海门地铁站G口',location:[113.9458,22.5323]};
+  const {requests,results:[result]}=await verify({recommendedMetro:rec,entryCount:2});
+  const tail=result.plans.find(p=>p.id==='innovation-metro-recommended').legs.at(-1);
+  assert.deepEqual(tail.origin,rec.exit.location);
+  assert.equal(tail.from,rec.exit.name);
+  assert.equal(tail.originPoiId,undefined); // Do not borrow the old E-gate POI.
+  assert.equal(requests[3].options.destinationPoiId,'B0OFFICE01');
+});
+
+test('over-limit recommended gates remain visible and do not prevent trying the other combinations',async()=>{
+  const {calls,work,requests,results:[result]}=await verify({recommendedMetro:recommendation(),entryCount:2,access:[600,600,200]});
+  assert.ok(work.indexOf('local-model')>work.indexOf('tail:bicycling'));
+  const recommended=result.plans.find(p=>p.id==='innovation-metro-recommended');
+  assert.equal(recommended.qualified,false);
+  assert.ok(result.plans.some(p=>p.metroMethod==='segmented'&&p.qualified));
+  // The preferred gate is revisited by fallback ranking without another API call.
+  assert.equal(requests.filter(r=>r.to==='南油地铁站0-1口'&&r.mode==='walking').length,1);
+  assert.ok(calls.filter(c=>c.startsWith('access:')).length>2);
+});
+
+test('a failed recommended leg never becomes an estimated qualifying result',async()=>{
+  const {work,results:[result]}=await verify({recommendedMetro:recommendation(),entryCount:2,recommendedTail:null});
+  assert.ok(work.includes('local-model'));
+  assert.ok(!result.plans.some(p=>p.id==='innovation-metro-recommended'));
+  assert.ok(result.plans.some(p=>p.qualified));
+});
 
 for(const [mode,duration] of [['walking',1800],['bicycling',1200]]){
   test(`${mode} meets its inclusive threshold: neither metro stage is requested`,async()=>{

@@ -4,6 +4,7 @@ import stationData from "@/public/data/stations.json";
 import {VERIFY_TIMEOUT_MS,rankAccessCandidates} from "@/lib/segmented-search";
 import {localAccessTimes} from "@/lib/local-access-server";
 import {surfaceLeg,fullMetro,METRO_DEPARTURE,MapApiError} from "@/lib/amap-server";
+import type {RecommendedMetro,MetroGate} from "@/lib/full-metro";
 import {DURATION_ROUNDING_VERSION,amapPoiId,distanceMeters,qualified,roundLeg,sumLegDurations,withinShenzhen,type Coord,type Leg,type Plan,type QueryStage,type Verification} from "@/lib/commute";
 
 type Prepared={id:string;stationId:string;stationName:string;officeId:string;duration:number;legs:Leg[];measuredAt:string;originalTotalDuration?:number|null;metroApi?:{originName:string;destinationName:string};originalReferenceScope?:string};
@@ -77,57 +78,117 @@ export async function POST(request:Request) {
           }));
           const surfaceQualified=result.plans.some(p=>p.qualified);
           let fullMetroQualified=false;
+          let recommendation:RecommendedMetro|undefined;
           if(!surfaceQualified&&!stopped()&&!apiSignal.aborted)try{
             stage("metro-full");result.checked++;
             const raw=await fullMetro(input.location,office.entrance as Coord,input.name,office.name,{...apiOptions,originPoiId,destinationPoiId:office.poiId});
             if(raw){
-              const leg=roundLeg(raw);fullMetroQualified=qualified(leg.duration,"metro");
+              const {recommendedMetro,...rawLeg}=raw;
+              recommendation=recommendedMetro;
+              const leg=roundLeg(rawLeg);fullMetroQualified=qualified(leg.duration,"metro");
               const plan:Plan={id:`${office.id}-metro-full`,officeId:office.id,mode:"metro",metroMethod:"full",title:"地铁完整方案",duration:leg.duration,limit:1200,qualified:fullMetroQualified,legs:[leg],measuredAt:leg.measuredAt!,source:"amap",note:`高德总时长，含步行、换乘及接口计入的候车。查询时刻：${METRO_DEPARTURE.label}。`};
               result.plans.push(plan);send({type:"plan",plan});
             }
           }catch(error){result.complete=false;result.errors.push(error instanceof MapApiError?error.message:"完整地铁方案暂未完成查询。");}
           if(!surfaceQualified&&!fullMetroQualified&&!stopped()&&!apiSignal.aborted) {
             stage("metro-segmented");
-            const candidates=candidatesByOffice.get(office.id)!;
-            local??=localAccessTimes(input.location,[...targets.values()],request.url);
-            const measured=await withinDeadline(local,apiSignal);
-            const times=candidates.map(candidate=>measured?.times[targetIndices.get(coordinateKey(candidate.entry.location))!]??{walking:null,bicycling:null});
-            const ranked=rankAccessCandidates(candidates,times);
-            if(measured){
-              result.localSearch={...ranked.summary,elapsedMs:measured.elapsedMs,source:"model"};
-              send({type:"local-search",officeId:office.id,localSearch:result.localSearch});
-            }
-            if(!preparedReady){result.complete=false;result.errors.push("车站到车站的地铁方案正在重算，暂不使用旧方案判定。");}
-            if(!measured&&!apiSignal.aborted){result.complete=false;result.errors.push("本地路网暂不可用，已保留高德结果。");}
-            for(const {candidate,mode} of ranked.proofs) {
-              if(stopped()||apiSignal.aborted)break;
-              try{
+            // Prove the full journey's actual street gates before any local
+            // ranking. A precomputed best tail can end at a different gate.
+            const proofs=new Map<string,Promise<Leg|null>>();
+            let continueAccess=true;
+            const querySurface=(mode:"walking"|"bicycling",origin:Coord,destination:Coord,from:string,to:string,originId?:string,destinationId?:string)=>{
+              const key=JSON.stringify([mode,coordinateKey(origin),coordinateKey(destination),...(mode==="walking"?[originId,destinationId]:[])]);
+              if(!proofs.has(key)){
                 result.checked++;
-                const raw=await surfaceLeg(mode,input.location,candidate.entry.location,input.name,candidate.entry.name,{...apiOptions,originPoiId,destinationPoiId:candidate.entry.id});
-                if(!raw)continue;
-                const first=roundLeg(raw),duration=first.duration+candidate.plan.duration;
-                const legs=[first,...candidate.plan.legs.map((leg,index)=>{
-                  if(leg.mode!=="metro"){
-                    if(index!==candidate.plan.legs.length-1||leg.kind==="transfer")return leg;
-                    const gate=entrances.get(entranceKey(leg.from,leg.origin));
-                    // Only retain IDs that were actually sent to the surface API.
-                    return leg.routingIdentity==="poi"?{...leg,originPoiId:gate?.id,destinationPoiId:office.poiId}:leg;
-                  }
-                  const pair=leg.instructions?.[0]?.split("：")[1]?.split(" → ");
-                  const a=stationData.stations.find(s=>s.name===(pair?.[0]??leg.from.replace(/站$/,""))),b=stationData.stations.find(s=>s.name===(pair?.[1]??leg.to.replace(/站$/,"")));
-                  return {...leg,from:a?a.name+"站":leg.from,to:b?b.name+"站":leg.to,origin:a?a.location as Coord:leg.origin,destination:b?b.location as Coord:leg.destination,
-                    originPoiId:a?.id,destinationPoiId:b?.id};
-                })];
-                const plan:Plan={id:candidate.plan.id,officeId:office.id,mode:"metro",metroMethod:"segmented",title:`经${candidate.plan.stationName}站`,duration,limit:1200,qualified:qualified(duration,"metro"),legs,measuredAt:candidate.plan.measuredAt,source:"amap",note:`地铁参考时刻：${METRO_DEPARTURE.label}。`};
-                const existing=result.plans.findIndex(p=>p.id===plan.id);
-                if(existing<0||result.plans[existing].duration>plan.duration){
+                proofs.set(key,surfaceLeg(mode,origin,destination,from,to,{...apiOptions,originPoiId:originId,destinationPoiId:destinationId}));
+              }
+              return proofs.get(key)!;
+            };
+            const accessError=(error:unknown)=>{
+              result.complete=false;result.errors.push(error instanceof MapApiError?error.message:"接驳路线暂未完成查询。");
+              if(apiSignal.aborted||!(error instanceof MapApiError)||!["NETWORK","REQUEST_TIMEOUT"].includes(error.code))continueAccess=false;
+            };
+            if(recommendation){
+              const station=(name:string)=>stationData.stations.find(s=>s.name===name);
+              const rails=recommendation.legs.map(raw=>{
+                const a=station(raw.from.replace(/站$/,"")),b=station(raw.to.replace(/站$/,""));
+                return roundLeg({...raw,measuredAt:result.plans.find(p=>p.metroMethod==="full")!.measuredAt,
+                  ...(raw.mode==="metro"?{originPoiId:a?.id,destinationPoiId:b?.id}:{} )});
+              });
+              const gateId=(gate:MetroGate)=>[...entrances.values()].find(entry=>entry.name===gate.name&&distanceMeters(entry.location,gate.location)<=3)?.id;
+              const first:Leg[]=[],last:Leg[]=[];
+              const id=`${office.id}-metro-recommended`;
+              const publish=()=>{
+                const combinations=first.flatMap(a=>last.map(b=>[a,...rails,b]));
+                const legs=combinations.sort((a,b)=>sumLegDurations(a)-sumLegDurations(b))[0];
+                if(!legs)return false;
+                const duration=sumLegDurations(legs);
+                const plan:Plan={id,officeId:office.id,mode:"metro",metroMethod:"segmented",title:`经${recommendation!.entry.stationName}站`,duration,limit:1200,qualified:qualified(duration,"metro"),legs,
+                  measuredAt:legs.find(leg=>leg.mode==="metro")!.measuredAt!,source:"amap",note:`优先核验完整方案推荐的进出站口；计入地铁路段与站内换乘。地铁参考时刻：${METRO_DEPARTURE.label}。`};
+                const existing=result.plans.findIndex(p=>p.id===id);
+                if(existing<0||result.plans[existing].duration>duration){
                   if(existing>=0)result.plans[existing]=plan;else result.plans.push(plan);
-                  send({type:"plan",plan,preparedPlanId:candidate.plan.id,originalTotalDuration:candidate.plan.originalTotalDuration,originalReferenceScope:candidate.plan.originalReferenceScope});
+                  send({type:"plan",plan});
                 }
-                if(plan.qualified)break;
-              }catch(error){
-                result.complete=false;result.errors.push(error instanceof MapApiError?error.message:"接驳路线暂未完成查询。");
-                if(apiSignal.aborted||!(error instanceof MapApiError)||!["NETWORK","REQUEST_TIMEOUT"].includes(error.code))break;
+                return plan.qualified;
+              };
+              // Check walking at both ends first. If it fails, compare cycling
+              // at both ends as well, retaining every successful combination.
+              for(const mode of ["walking","bicycling"] as const){
+                if(stopped()||apiSignal.aborted||!continueAccess)break;
+                const rec=recommendation;
+                const responses=await Promise.allSettled([
+                  querySurface(mode,input.location,rec.entry.location,input.name,rec.entry.name,originPoiId,gateId(rec.entry)),
+                  querySurface(mode,rec.exit.location,office.entrance as Coord,rec.exit.name,office.name,gateId(rec.exit),office.poiId),
+                ]);
+                responses.forEach((response,index)=>{
+                  if(response.status==="rejected")accessError(response.reason);
+                  else if(response.value)(index===0?first:last).push(roundLeg(response.value));
+                });
+                if(publish())break;
+              }
+            }
+            if(!result.plans.some(p=>p.qualified)&&continueAccess&&!stopped()&&!apiSignal.aborted){
+              const candidates=candidatesByOffice.get(office.id)!;
+              local??=localAccessTimes(input.location,[...targets.values()],request.url);
+              const measured=await withinDeadline(local,apiSignal);
+              const times=candidates.map(candidate=>measured?.times[targetIndices.get(coordinateKey(candidate.entry.location))!]??{walking:null,bicycling:null});
+              const ranked=rankAccessCandidates(candidates,times);
+              if(measured){
+                result.localSearch={...ranked.summary,elapsedMs:measured.elapsedMs,source:"model"};
+                send({type:"local-search",officeId:office.id,localSearch:result.localSearch});
+              }
+              if(!preparedReady){result.complete=false;result.errors.push("车站到车站的地铁方案正在重算，暂不使用旧方案判定。");}
+              if(!measured&&!apiSignal.aborted){result.complete=false;result.errors.push("本地路网暂不可用，已保留高德结果。");}
+              for(const {candidate,mode} of ranked.proofs) {
+                if(stopped()||apiSignal.aborted)break;
+                try{
+                  const raw=await querySurface(mode,input.location,candidate.entry.location,input.name,candidate.entry.name,originPoiId,candidate.entry.id);
+                  if(!raw)continue;
+                  const first=roundLeg(raw),duration=first.duration+candidate.plan.duration;
+                  const legs=[first,...candidate.plan.legs.map((leg,index)=>{
+                    if(leg.mode!=="metro"){
+                      if(index!==candidate.plan.legs.length-1||leg.kind==="transfer")return leg;
+                      const gate=entrances.get(entranceKey(leg.from,leg.origin));
+                      // Only retain IDs that were actually sent to the surface API.
+                      return leg.routingIdentity==="poi"?{...leg,originPoiId:gate?.id,destinationPoiId:office.poiId}:leg;
+                    }
+                    const pair=leg.instructions?.[0]?.split("：")[1]?.split(" → ");
+                    const a=stationData.stations.find(s=>s.name===(pair?.[0]??leg.from.replace(/站$/,""))),b=stationData.stations.find(s=>s.name===(pair?.[1]??leg.to.replace(/站$/,"")));
+                    return {...leg,from:a?a.name+"站":leg.from,to:b?b.name+"站":leg.to,origin:a?a.location as Coord:leg.origin,destination:b?b.location as Coord:leg.destination,
+                      originPoiId:a?.id,destinationPoiId:b?.id};
+                  })];
+                  const plan:Plan={id:candidate.plan.id,officeId:office.id,mode:"metro",metroMethod:"segmented",title:`经${candidate.plan.stationName}站`,duration,limit:1200,qualified:qualified(duration,"metro"),legs,measuredAt:candidate.plan.measuredAt,source:"amap",note:`地铁参考时刻：${METRO_DEPARTURE.label}。`};
+                  const existing=result.plans.findIndex(p=>p.id===plan.id);
+                  if(existing<0||result.plans[existing].duration>plan.duration){
+                    if(existing>=0)result.plans[existing]=plan;else result.plans.push(plan);
+                    send({type:"plan",plan,preparedPlanId:candidate.plan.id,originalTotalDuration:candidate.plan.originalTotalDuration,originalReferenceScope:candidate.plan.originalReferenceScope});
+                  }
+                  if(plan.qualified)break;
+                }catch(error){
+                  accessError(error);
+                  if(!continueAccess)break;
+                }
               }
             }
             if(!result.plans.some(p=>p.qualified))result.complete=false;
