@@ -8,7 +8,7 @@ export const METRO_DEPARTURE = {date:"2026-11-09",time:"09-00",label:"2026-11-09
 
 type Json = Record<string, any>;
 export class MapApiError extends Error { constructor(message: string, public code = "MAP_ERROR") { super(message); } }
-type RequestOptions={signal?:AbortSignal};
+type RequestOptions={signal?:AbortSignal;refresh?:boolean};
 type RouteRequestOptions=RequestOptions&{originPoiId?:string;destinationPoiId?:string};
 export const AMAP_REQUEST_TIMEOUT_MS=8000;
 const timeoutError=()=>new MapApiError("高德核验超时，已有结果已保留。", "TIME_BUDGET");
@@ -29,7 +29,7 @@ export async function amap(service: string, params: Record<string, string | numb
   try {
     const cacheKey = createHash("sha256").update(JSON.stringify([service, Object.entries(params).sort()])).digest("hex");
     const now = Date.now();
-    const hit = await env.DB.prepare("SELECT payload, created_at FROM api_cache WHERE key=? AND expires_at>?").bind(cacheKey, now).first<{payload:string; created_at:number}>();
+    const hit = options.refresh ? null : await env.DB.prepare("SELECT payload, created_at FROM api_cache WHERE key=? AND expires_at>?").bind(cacheKey, now).first<{payload:string; created_at:number}>();
     if(signal.aborted)throw timeoutError();
     if (hit) {cached=true;return {data:JSON.parse(hit.payload), createdAt:hit.created_at, cached:true};}
     phase="budget";

@@ -70,6 +70,22 @@ test('cached routes return without a second upstream call or spending more quota
   }finally{h.db.close();}
 });
 
+test('a refresh replaces the provider cache and still spends the normal quota',async()=>{
+  const h=await harness({limit:'2',upstream:({number})=>Response.json({status:'1',revision:number})});
+  try {
+    const query={origin:'test',destination:'office'};
+    await h.api.amap('v5/direction/walking',query);
+    const updated=await h.api.amap('v5/direction/walking',query,'routes',{refresh:true});
+    assert.equal(updated.cached,false);
+    assert.equal(updated.data.revision,2);
+    const cached=await h.api.amap('v5/direction/walking',query);
+    assert.equal(cached.cached,true);
+    assert.equal(cached.data.revision,2);
+    await assert.rejects(h.api.amap('v5/direction/walking',query,'routes',{refresh:true}),{code:'BUDGET_LIMIT'});
+    assert.equal(h.requests.length,2);
+  }finally{h.db.close();}
+});
+
 test('atomic budget reservation never exceeds the configured cap across simultaneous misses',async()=>{
   const h=await harness({limit:'2'});
   try{

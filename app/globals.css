@@ -185,6 +185,7 @@ input, select { min-width: 0; }
 .result-status { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px; border-radius: 10px; background: var(--soft); color: var(--muted); transition: background-color 220ms ease, color 220ms ease; }
 .result-status > svg { width: 16px; height: 16px; }
 .result-status h2 { flex: 1; min-width: 0; margin: 0; font-size: 13px; font-weight: 500; line-height: 1.6; }
+.shared-result-tag { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .result-status.pass { color: var(--green); background: var(--walking-soft); }
 .result-status.edge { color: var(--metro); background: var(--metro-soft); }
 .local-search-summary { margin: 8px 8px 0; font-size: 12px; line-height: 1.7; color: var(--muted); }

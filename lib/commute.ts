@@ -9,7 +9,7 @@ export type Plan = { id: string; officeId: string; mode: Mode; title: string; du
 export type LocalSearch={total:number;reachable:number;withinLimit:number;bestDuration:number|null;elapsedMs:number;source:"model"};
 // `complete` means this query's selected checks finished without missing data
 // or an interrupted API call. It does not assert an exhaustive policy decision.
-export type Verification = { officeId: string; plans: Plan[]; complete: boolean; checked: number; errors: string[]; measuredAt: string; localSearch?:LocalSearch; };
+export type Verification = { officeId: string; plans: Plan[]; complete: boolean; checked: number; errors: string[]; measuredAt: string; localSearch?:LocalSearch; reused?:true; };
 export const MODE_LABEL: Record<Mode, string> = { walking: "步行直达", bicycling: "自行车直达", metro: "地铁＋接驳" };
 export const MODE_COLOR: Record<Mode, string> = { walking: "#41896e", bicycling: "#5e83c2", metro: "#ca9857" };
 export const LIMITS: Record<Mode, number> = { walking: 1800, bicycling: 1200, metro: 1200 };

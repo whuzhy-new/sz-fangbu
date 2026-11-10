@@ -109,7 +109,7 @@ export default function CommuteApp() {
     return()=>media.removeEventListener("change",update);
   },[]);
 
-  const verify=useCallback(async(place:Place,ids:string[],resetResults=false)=>{
+  const verify=useCallback(async(place:Place,ids:string[],{resetResults=false,refresh=false}:{resetResults?:boolean;refresh?:boolean}={})=>{
     if(!ids.length)return;
     abort.current?.abort();
     const controller=new AbortController();abort.current=controller;const token=++requestId.current;
@@ -122,7 +122,7 @@ export default function CommuteApp() {
     if(resetResults||ids.includes(activeRef.current)){manualPlan.current=false;setSelectedPlan(null);}
     setLoading(true);setQueryStage("surface");setQueryStopped(false);setError("");setMobileOpen(true);setCurrentOffice(ids[0]);
     try {
-      const response=await fetch("/api/verify",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:place.location,name:place.name,poiId:placePoiId(place),officeIds:ids}),signal:controller.signal});
+      const response=await fetch("/api/verify",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:place.location,name:place.name,poiId:placePoiId(place),officeIds:ids,refresh}),signal:controller.signal});
       if(!response.ok){const data=await response.json() as {error?:string};throw new Error(data.error??"路线查询失败，请重试。");}
       if(!response.body)throw new Error("未取得路线结果，请重试。");
       const reader=response.body.getReader(),decoder=new TextDecoder();let pending="",finished=false;
@@ -152,7 +152,10 @@ export default function CommuteApp() {
         }
         if(event.type==="office-result"){
           const next=event.result as Verification;settled.current.add(next.officeId);
-          setResults(previous=>({...previous,[next.officeId]:{...next,plans:next.plans.map(plan=>previous[next.officeId]?.plans.find(old=>old.id===plan.id)??plan)}}));
+          setResults(previous=>({...previous,[next.officeId]:next.reused?next:{...next,plans:next.plans.map(plan=>previous[next.officeId]?.plans.find(old=>old.id===plan.id)??plan)}}));
+          if(next.reused&&next.officeId===activeRef.current)setSelectedPlan(previous=>manualPlan.current
+            ?next.plans.find(plan=>plan.id===previous?.id)??null
+            :visiblePlans(next.plans).find(plan=>plan.qualified)??null);
         }
         if(event.type==="error")setError(event.message);
         if(event.type==="done")finished=true;
@@ -176,7 +179,7 @@ export default function CommuteApp() {
     setPendingLocation(null);setPendingName("");setPendingPoiId(undefined);setHome(point);setQuery(place.name);setSearchOpen(false);setActiveTool(null);setSearchRequest(null);setSearching(false);searchInput.current?.blur();
     setRecentPlaces(previous=>rememberPlace(previous,point));
     mobileContent.current?.scrollTo({top:0});
-    verify(point,[activeId],true);
+    verify(point,[activeId],{resetResults:true});
   },[verify,activeId]);
 
   useEffect(()=>{
@@ -292,7 +295,7 @@ export default function CommuteApp() {
             </AnimatedCollapse>
   </>);
   const analysis=(<>
-    {showAnalysis&&home&&<div className="selected-home"><span>拖动标记可调整入口</span><div className="selected-home-actions"><button className="icon-button place-save-button" aria-label={homeSaved?"取消收藏地点":"收藏地点"} title={homeSaved?"取消收藏":"收藏地点"} aria-pressed={homeSaved} onClick={()=>setFavorites(previous=>toggleFavorite(previous,home))}><Star size={16} fill={homeSaved?"currentColor":"none"} aria-hidden="true"/></button><button className="text-button" onClick={()=>verify(home,[activeId])} disabled={loading}><RotateCw size={13} aria-hidden="true"/>重新核验</button></div></div>}
+    {showAnalysis&&home&&<div className="selected-home"><span>拖动标记可调整入口</span><div className="selected-home-actions"><button className="icon-button place-save-button" aria-label={homeSaved?"取消收藏地点":"收藏地点"} title={homeSaved?"取消收藏":"收藏地点"} aria-pressed={homeSaved} onClick={()=>setFavorites(previous=>toggleFavorite(previous,home))}><Star size={16} fill={homeSaved?"currentColor":"none"} aria-hidden="true"/></button><button className="text-button" onClick={()=>verify(home,[activeId],{refresh:true})} disabled={loading}><RotateCw size={13} aria-hidden="true"/>重新核验</button></div></div>}
           {storageError&&<p className="storage-error" role="status">{storageError}</p>}
           {showAnalysis&&home&&<RouteResults result={result} plans={plans} selectedPlan={selectedPlan} loading={activeLoading} queryStage={queryStage} stopped={queryStopped&&!settled.current.has(activeId)} error={error} onStop={stopVerification} onSelect={plan=>{manualPlan.current=true;setSelectedPlan(selectedPlan?.id===plan.id?null:plan);}}/>}
           {!home&&error&&<p className="query-error" role="alert">{error}</p>}

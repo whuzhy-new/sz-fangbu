@@ -36,6 +36,7 @@ export default function RouteResults({result,plans,selectedPlan,loading,querySta
     <div className={`result-status ${best?"pass":""}`} role="status" aria-live="polite">
       {best?<Check size={21} aria-hidden="true"/>:loading?<LoaderCircle size={20} className="spin" aria-hidden="true"/>:<CircleHelp size={20} aria-hidden="true"/>}
       <h2 key={status} className="status-label">{status}</h2>
+      {!loading&&result?.reused&&<span className="shared-result-tag" title={`${date(result.measuredAt)} 核验`}>云端结果</span>}
       {loading&&<button className="text-button" onClick={onStop}>停止</button>}
     </div>
     {!best&&result?.localSearch&&<p className="local-search-summary">本地已比较 {result.localSearch.total} 个组合{result.localSearch.bestDuration!==null&&<> · 估算最短 {formatDuration(result.localSearch.bestDuration)}</>}</p>}

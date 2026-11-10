@@ -6,11 +6,12 @@ import {localAccessTimes} from "@/lib/local-access-server";
 import {surfaceLeg,fullMetro,stationMetro,METRO_DEPARTURE,MapApiError} from "@/lib/amap-server";
 import type {RecommendedMetro} from "@/lib/full-metro";
 import {hasGateNumber,recommendedStreetGates} from "@/lib/metro-gates";
-import {DURATION_ROUNDING_VERSION,amapPoiId,distanceMeters,qualified,roundLeg,sumLegDurations,withinShenzhen,type Coord,type Leg,type Plan,type QueryStage,type Verification} from "@/lib/commute";
+import {readSharedVerification,verificationCacheKey,writeSharedVerification} from "@/lib/verification-cache";
+import {DURATION_ROUNDING_VERSION,LIMITS,amapPoiId,distanceMeters,qualified,roundLeg,sumLegDurations,withinShenzhen,type Coord,type Leg,type Plan,type QueryStage,type Verification} from "@/lib/commute";
 
 type Prepared={id:string;stationId:string;stationName:string;officeId:string;duration:number;legs:Leg[];measuredAt:string;originalTotalDuration?:number|null;metroApi?:{originName:string;destinationName:string};originalReferenceScope?:string};
 type Entry={id:string;name:string;location:Coord;source:string};
-type Index={methodVersion?:string;durationRounding?:string;complete:boolean;plans:Record<string,Record<string,Prepared>>;entries:Record<string,Entry[]>};
+type Index={methodVersion?:string;generatedAt?:string;durationRounding?:string;complete:boolean;plans:Record<string,Record<string,Prepared>>;entries:Record<string,Entry[]>};
 const prepared=metro as unknown as Index;
 // The original 30-second snapshots predate this metadata field.
 const preparedRounding=prepared.durationRounding??"per-leg-minute-half-up-min-one-v2";
@@ -39,21 +40,25 @@ function withinDeadline<T>(promise:Promise<T>,signal:AbortSignal):Promise<T|null
 }
 
 export async function POST(request:Request) {
-  let input:{location:Coord;name:string;officeIds:string[];poiId?:string};
+  let input:{location:Coord;name:string;officeIds:string[];poiId?:string;refresh?:boolean};
   try{input=await request.json();}catch{return Response.json({error:"地址格式有误。"},{status:400});}
   if(!input||typeof input!=="object"||!Array.isArray(input.location)||!withinShenzhen(input.location)||typeof input.name!=="string"||input.name.length>120||!Array.isArray(input.officeIds)||input.officeIds.length>3||!input.officeIds.length||input.officeIds.some(id=>!offices.some(o=>o.id===id)))return Response.json({error:"请选择深圳范围内的位置和有效工区。"},{status:400});
   const originPoiId=amapPoiId(input.poiId);
   const encoder=new TextEncoder();
   const apiSignal=AbortSignal.any([request.signal,AbortSignal.timeout(VERIFY_TIMEOUT_MS)]);
-  const apiOptions={signal:apiSignal};
+  const refresh=input.refresh===true;
+  const apiOptions={signal:apiSignal,refresh};
   const selectedOffices=[...new Set(input.officeIds)].map(id=>offices.find(o=>o.id===id)!);
-  const candidatesByOffice=new Map(selectedOffices.map(office=>[office.id,preparedCandidates(office.id,input.location)]));
-  const targets=new Map<string,Coord>();
-  for(const candidates of candidatesByOffice.values())for(const candidate of candidates)targets.set(coordinateKey(candidate.entry.location),candidate.entry.location);
-  const targetKeys=[...targets.keys()],targetIndices=new Map(targetKeys.map((key,index)=>[key,index]));
+  function prepareAccess(){
+    const candidatesByOffice=new Map(selectedOffices.map(office=>[office.id,preparedCandidates(office.id,input.location)]));
+    const targets=new Map<string,Coord>();
+    for(const candidates of candidatesByOffice.values())for(const candidate of candidates)targets.set(coordinateKey(candidate.entry.location),candidate.entry.location);
+    return {candidatesByOffice,targets:[...targets.values()],targetIndices:new Map([...targets.keys()].map((key,index)=>[key,index]))};
+  }
   // Only load the road graph if both earlier stages fail. Reuse one search
   // across requested offices without delaying the direct metro API.
   let local:ReturnType<typeof localAccessTimes>|undefined;
+  let access:ReturnType<typeof prepareAccess>|undefined;
   let cancelled=false;
   const stream=new ReadableStream({
     async start(controller) {
@@ -62,7 +67,13 @@ export async function POST(request:Request) {
       try{
         for(const office of selectedOffices) {
           if(stopped())break;
-          const result:Verification={officeId:office.id,plans:[],complete:true,checked:0,errors:[],measuredAt:new Date().toISOString()};
+          const startedAt=Date.now();
+          const key=verificationCacheKey(office.id,input.location,originPoiId,JSON.stringify([office.name,office.entrance,office.poiId,
+            "walkingIdentity" in office?office.walkingIdentity:null,DURATION_ROUNDING_VERSION,LIMITS,METRO_DEPARTURE.label,prepared.methodVersion,prepared.generatedAt,preparedReady]));
+          const cached=await readSharedVerification(key,input.name);
+          if(stopped())break;
+          if(cached&&!refresh){send({type:"office-result",result:cached});continue;}
+          const result:Verification={officeId:office.id,plans:[],complete:true,checked:0,errors:[],measuredAt:new Date(startedAt).toISOString()};
           const stage=(stage:QueryStage)=>send({type:"stage",officeId:office.id,stage});
           send({type:"office-start",officeId:office.id});stage("surface");
           await Promise.all((["walking","bicycling"] as const).map(async mode=>{
@@ -158,8 +169,9 @@ export async function POST(request:Request) {
               }
             }
             if(!result.plans.some(p=>p.qualified)&&continueAccess&&!stopped()&&!apiSignal.aborted){
+              const {candidatesByOffice,targets,targetIndices}=access??=prepareAccess();
               const candidates=candidatesByOffice.get(office.id)!;
-              local??=localAccessTimes(input.location,[...targets.values()],request.url);
+              local??=localAccessTimes(input.location,targets,request.url);
               const measured=await withinDeadline(local,apiSignal);
               const times=candidates.map(candidate=>measured?.times[targetIndices.get(coordinateKey(candidate.entry.location))!]??{walking:null,bicycling:null});
               const ranked=rankAccessCandidates(candidates,times);
@@ -188,7 +200,7 @@ export async function POST(request:Request) {
                     return {...leg,from:a?a.name+"站":leg.from,to:b?b.name+"站":leg.to,origin:a?a.location as Coord:leg.origin,destination:b?b.location as Coord:leg.destination,
                       originPoiId:a?.id,destinationPoiId:b?.id};
                   })];
-                  const plan:Plan={id:candidate.plan.id,officeId:office.id,mode:"metro",metroMethod:"segmented",title:`经${candidate.plan.stationName}站`,duration,limit:1200,qualified:qualified(duration,"metro"),legs,measuredAt:candidate.plan.measuredAt,source:"amap",note:`地铁参考时刻：${METRO_DEPARTURE.label}。`};
+                  const plan:Plan={id:candidate.plan.id,officeId:office.id,mode:"metro",metroMethod:"segmented",title:`经${candidate.plan.stationName}站`,duration,limit:1200,qualified:qualified(duration,"metro"),legs,measuredAt:candidate.plan.measuredAt,source:"amap",originalReferenceDuration:candidate.plan.originalTotalDuration,originalReferenceScope:candidate.plan.originalReferenceScope,note:`地铁参考时刻：${METRO_DEPARTURE.label}。`};
                   const existing=result.plans.findIndex(p=>p.id===plan.id);
                   if(existing<0||result.plans[existing].duration>plan.duration){
                     if(existing>=0)result.plans[existing]=plan;else result.plans.push(plan);
@@ -209,6 +221,11 @@ export async function POST(request:Request) {
           if(apiSignal.aborted&&!stopped()&&!result.plans.some(p=>p.qualified)){result.complete=false;result.errors.push("高德核验超时，已有结果已保留。");}
           result.errors=[...new Set(result.errors)];
           result.plans.sort((a,b)=>Number(b.qualified)-Number(a.qualified)||a.duration-b.duration);
+          if(!stopped()&&cached&&(!result.complete||!result.plans.length)&&!result.plans.some(p=>p.qualified)){
+            send({type:"office-result",result:{...cached,errors:["未完成重新核验，已保留上次结果。"]}});
+            continue;
+          }
+          if(!stopped())await writeSharedVerification(key,result,startedAt);
           send({type:"office-result",result});
         }
         send({type:"done"});

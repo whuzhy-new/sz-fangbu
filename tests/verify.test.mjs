@@ -20,7 +20,7 @@ const offices=[{id:'innovation',name:'创新工区',poiId:'B0OFFICE01',walkingId
 const leg=(mode,duration,origin,destination,from,to)=>({mode,duration,origin,destination,from,to,
   label:mode,distance:100,paths:[],source:'amap',measuredAt});
 
-async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,unnamedAccess=false,elapsedPerCall=0,recommendedMetro,recommendedTail=150,stationDuration=750,stationLegs}={}){
+async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,unnamedAccess=false,elapsedPerCall=0,recommendedMetro,recommendedTail=150,stationDuration=750,stationLegs,sharedCache,refresh=false}={}){
   const calls=[],work=[],requests=[],stationRequests=[];
   let elapsed=0,budget,accessIndex=0;
   const deadline=deadlineController??new AbortController();
@@ -40,6 +40,11 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
     '@/lib/local-access-server':{async localAccessTimes(origin,targets){work.push('local-model');if(localDeadline){deadline.abort();return new Promise(()=>{});}if(localFailure)throw new Error('unavailable');return {times:targets.map(()=>({walking:modelAccess,bicycling:modelAccess})),elapsedMs:1,osmDate:'2026-11-07'};}},
     '@/lib/segmented-search':segmentedSearch,
     '@/lib/metro-gates':metroGates,
+    '@/lib/verification-cache':{
+      verificationCacheKey:(...args)=>JSON.stringify(args),
+      async readSharedVerification(key){const hit=sharedCache?.get(key);return hit?{...hit,reused:true,checked:0}:null;},
+      async writeSharedVerification(key,result){if(result.complete&&result.plans.length)sharedCache?.set(key,result);},
+    },
     '@/public/data/stations.json':{default:{stations:[...stations,{id:'yuehaimen',name:'粤海门',location:[113.945531,22.532695]}]}},
     '@/lib/commute':commute,
     '@/lib/amap-server':{
@@ -86,7 +91,7 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
   await route.evaluate();
   const response=await route.namespace.POST(new Request('http://localhost/api/verify',{
     method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({location:point,name:'测试小区门口',officeIds,poiId})
+    body:JSON.stringify({location:point,name:'测试小区门口',officeIds,poiId,refresh})
   }));
   assert.equal(response.status,200);
   const events=(await response.text()).trim().split('\n').map(JSON.parse);
@@ -94,6 +99,40 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
   assert.ok(!events.some(e=>e.type==='error'));
   return {calls,work,requests,stationRequests,elapsed,events,results:events.filter(e=>e.type==='office-result').map(e=>e.result)};
 }
+
+test('a complete result is reused across requests without spending more AMap calls',async()=>{
+  const sharedCache=new Map();
+  const initial=await verify({sharedCache,surface:{innovation:{walking:1200}}});
+  const reused=await verify({sharedCache,officeIds:['innovation','prince'],surface:{prince:{walking:1200}}});
+  assert.deepEqual(reused.calls,['prince:walking','prince:bicycling']);
+  assert.deepEqual(reused.events.filter(e=>e.type==='stage').map(e=>e.officeId),['prince']);
+  assert.equal(reused.results[0].reused,true);
+  assert.equal(reused.results[0].checked,0);
+  assert.deepEqual(reused.results[0].plans,initial.results[0].plans);
+});
+
+test('explicit verification refreshes provider routes and replaces the shared result',async()=>{
+  const sharedCache=new Map();
+  await verify({sharedCache,surface:{innovation:{walking:1200}}});
+  const refreshed=await verify({sharedCache,refresh:true,surface:{innovation:{walking:1800}}});
+  assert.equal(refreshed.results[0].reused,undefined);
+  assert.ok(refreshed.requests.length&&refreshed.requests.every(r=>r.options.refresh===true));
+  const reused=await verify({sharedCache});
+  assert.deepEqual(reused.calls,[]);
+  assert.equal(reused.results[0].plans.find(p=>p.mode==='walking').duration,1800);
+});
+
+test('a failed refresh returns the previous complete result without replacing it',async()=>{
+  const sharedCache=new Map();
+  const original=await verify({sharedCache,surface:{innovation:{walking:1200}}});
+  const failed=await verify({sharedCache,refresh:true,surface:{innovation:{walking:'error',bicycling:'error'}},direct:{innovation:'error'},access:900});
+  assert.ok(failed.calls.length);
+  assert.equal(failed.results[0].reused,true);
+  assert.deepEqual(failed.results[0].plans,original.results[0].plans);
+  assert.match(failed.results[0].errors[0],/已保留上次结果/);
+  const next=await verify({sharedCache});
+  assert.deepEqual(next.results[0].errors,[]);
+});
 
 const recommendation=()=>({entry:{stationName:'南油',name:'南油地铁站0-1口',location:[point[0]+.0001,point[1]]},
   exit:{stationName:'粤海门',name:'粤海门E口',location:[113.945531,22.532695]}});
