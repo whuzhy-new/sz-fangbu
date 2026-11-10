@@ -5,6 +5,7 @@ import {createContext,SourceTextModule,SyntheticModule} from 'node:vm';
 import ts from 'typescript';
 import * as commute from '../lib/commute.ts';
 import * as segmentedSearch from '../lib/segmented-search.ts';
+import * as metroGates from '../lib/metro-gates.ts';
 import {reviewRoutes} from '../lib/route-review.ts';
 import {surfaceRouteParams,transitRouteParams} from '../lib/amap-route-params.ts';
 
@@ -19,7 +20,7 @@ const offices=[{id:'innovation',name:'创新工区',poiId:'B0OFFICE01',walkingId
 const leg=(mode,duration,origin,destination,from,to)=>({mode,duration,origin,destination,from,to,
   label:mode,distance:100,paths:[],source:'amap',measuredAt});
 
-async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,elapsedPerCall=0,recommendedMetro,recommendedTail=150,stationDuration=750,stationLegs}={}){
+async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,unnamedAccess=false,elapsedPerCall=0,recommendedMetro,recommendedTail=150,stationDuration=750,stationLegs}={}){
   const calls=[],work=[],requests=[],stationRequests=[];
   let elapsed=0,budget,accessIndex=0;
   const deadline=deadlineController??new AbortController();
@@ -31,20 +32,21 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
     metroApi:{originName:station.name,destinationName:'粤海门'},legs:[
       leg('metro',fixed[0],point,[113.945531,22.532695],station.name+'站','粤海门站'),
       {...leg('walking',fixed[1],[113.945531,22.532695],staleOfficeEndpoint?[113.947837,22.528476]:office.entrance,'粤海门E口',office.name),routingIdentity:staleRoutingIdentity?undefined:'poi',originPoiId:'B0EXIT0001',destinationPoiId:office.poiId}]}]))]));
-  const entries={...Object.fromEntries(stations.map((station,n)=>[station.id,Array.from({length:entryCount},(_,i)=>({id:`B0ENTRY${n}${i}`,name:`南油地铁站${n}-${i}口`,location:[point[0]+i*.0001,point[1]+n*.0002],source:'amap'}))])),
+  const entries={...Object.fromEntries(stations.map((station,n)=>[station.id,Array.from({length:entryCount},(_,i)=>({id:`B0ENTRY${n}${i}`,name:unnamedAccess?'南油地铁站出入口':`南油地铁站${n}-${i}口`,location:[point[0]+i*.0001,point[1]+n*.0002],source:'amap'}))])),
     yuehaimen:[{id:'B0EXIT0001',name:'粤海门E口',location:[113.945531,22.532695],source:'amap'}]};
   const dependencies={
     '@/public/data/offices.json':{default:offices},
     '@/data/metro-index.json':{default:{complete:true,methodVersion:'amap-station-pair-v3',durationRounding:commute.DURATION_ROUNDING_VERSION,plans,entries}},
     '@/lib/local-access-server':{async localAccessTimes(origin,targets){work.push('local-model');if(localDeadline){deadline.abort();return new Promise(()=>{});}if(localFailure)throw new Error('unavailable');return {times:targets.map(()=>({walking:modelAccess,bicycling:modelAccess})),elapsedMs:1,osmDate:'2026-11-07'};}},
     '@/lib/segmented-search':segmentedSearch,
+    '@/lib/metro-gates':metroGates,
     '@/public/data/stations.json':{default:{stations:[...stations,{id:'yuehaimen',name:'粤海门',location:[113.945531,22.532695]}]}},
     '@/lib/commute':commute,
     '@/lib/amap-server':{
       MapApiError,METRO_DEPARTURE:{label:'2026-11-09 09:00'},
       async surfaceLeg(mode,origin,destination,from,to,options){
         const office=offices.find(o=>o.name===to);
-        const tail=office&&from===recommendedMetro?.exit.name;
+        const tail=office&&from!=='测试小区门口';
         calls.push(`${tail?'tail':office?.id??'access'}:${mode}`);
         requests.push({mode,origin,destination,from,to,options});
         work.push(calls.at(-1));advance();
@@ -138,6 +140,36 @@ test('recommended egress uses the exact API gate even when the prepared best tai
   assert.equal(tail.from,rec.exit.name);
   assert.equal(tail.originPoiId,undefined); // Do not borrow the old E-gate POI.
   assert.equal(requests[3].options.destinationPoiId,'B0OFFICE01');
+});
+
+test('generic gate hints are resolved before querying access and egress, retaining station-pair rail',async()=>{
+  const rec=recommendation();
+  rec.entry={...rec.entry,name:'南油地铁站出入口',location:[point[0]+.00009,point[1]+.00001]};
+  rec.exit={...rec.exit,name:'粤海门地铁站出入口',location:[113.9456,22.5328]};
+  const {requests,stationRequests,work,results:[result]}=await verify({recommendedMetro:rec,entryCount:3,poiId:'B0HOME0001'});
+  assert.ok(!work.includes('local-model'));
+  assert.deepEqual(stationRequests.map(r=>[r.origin.name,r.destination.name]),[['南油','粤海门']]);
+  const accessRequests=requests.filter(r=>r.from==='测试小区门口'&&!offices.some(o=>o.name===r.to));
+  assert.equal(accessRequests.length,2);
+  assert.deepEqual(accessRequests.map(r=>r.options.destinationPoiId),['B0ENTRY01','B0ENTRY00']);
+  assert.ok(requests.every(r=>!r.from.includes('出入口')&&!r.to.includes('出入口')));
+  const plan=result.plans.find(p=>p.id==='innovation-metro-recommended');
+  assert.ok(plan.qualified);
+  const tail=plan.legs.at(-1);
+  assert.equal(tail.from,'粤海门E口');
+  assert.equal(tail.originPoiId,'B0EXIT0001');
+  assert.deepEqual(tail.origin,[113.945531,22.532695]);
+  assert.notDeepEqual(tail.origin,rec.exit.location);
+  const qr=new URL(reviewRoutes(plan,'ios').at(-1).url);
+  assert.equal(qr.searchParams.get('sname'),'粤海门E口');
+  assert.equal(qr.searchParams.get('sid'),'B0EXIT0001');
+});
+
+test('fallback ranking never queries an unnumbered entrance',async()=>{
+  const {calls,results:[result]}=await verify({unnamedAccess:true});
+  assert.ok(!calls.some(c=>c.startsWith('access:')));
+  assert.ok(!result.plans.some(p=>p.metroMethod==='segmented'));
+  assert.equal(result.complete,false);
 });
 
 test('over-limit recommended gates remain visible and do not prevent trying the other combinations',async()=>{

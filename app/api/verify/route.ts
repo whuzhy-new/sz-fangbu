@@ -4,7 +4,8 @@ import stationData from "@/public/data/stations.json";
 import {VERIFY_TIMEOUT_MS,rankAccessCandidates} from "@/lib/segmented-search";
 import {localAccessTimes} from "@/lib/local-access-server";
 import {surfaceLeg,fullMetro,stationMetro,METRO_DEPARTURE,MapApiError} from "@/lib/amap-server";
-import type {RecommendedMetro,MetroGate} from "@/lib/full-metro";
+import type {RecommendedMetro} from "@/lib/full-metro";
+import {hasGateNumber,recommendedStreetGates} from "@/lib/metro-gates";
 import {DURATION_ROUNDING_VERSION,amapPoiId,distanceMeters,qualified,roundLeg,sumLegDurations,withinShenzhen,type Coord,type Leg,type Plan,type QueryStage,type Verification} from "@/lib/commute";
 
 type Prepared={id:string;stationId:string;stationName:string;officeId:string;duration:number;legs:Leg[];measuredAt:string;originalTotalDuration?:number|null;metroApi?:{originName:string;destinationName:string};originalReferenceScope?:string};
@@ -17,13 +18,13 @@ const preparedReady=prepared.complete&&prepared.methodVersion==="amap-station-pa
 const preparedCandidates=(officeId:string,origin:Coord)=>Object.values(preparedReady?prepared.plans[officeId]??{}:{})
   .filter(plan=>{
     const office=offices.find(o=>o.id===officeId),tail=plan.legs.at(-1);
-    return office&&tail&&tail.destination.length===2&&tail.destination.every((value,index)=>value===office.entrance[index])
+    return office&&tail&&hasGateNumber(tail.from)&&tail.destination.length===2&&tail.destination.every((value,index)=>value===office.entrance[index])
       &&(!tail.destinationPoiId||tail.destinationPoiId===office.poiId)
       &&(!("walkingIdentity" in office&&office.walkingIdentity==="poi"&&tail.mode==="walking")||tail.routingIdentity==="poi");
   })
   .filter(plan=>plan.metroApi?.originName===plan.stationName&&plan.legs.find(l=>l.mode==="metro")?.from===plan.stationName+"站"&&plan.legs.filter(l=>l.mode==="metro").at(-1)?.to===plan.metroApi.destinationName+"站")
   .map(plan=>({...plan,legs:plan.legs.map(roundLeg),duration:sumLegDurations(plan.legs)}))
-  .flatMap(plan=>(prepared.entries[plan.stationId]??[]).filter(entry=>entry.source==="amap").map(entry=>({plan,entry,distance:distanceMeters(origin,entry.location)})));
+  .flatMap(plan=>(prepared.entries[plan.stationId]??[]).filter(entry=>entry.source==="amap"&&hasGateNumber(entry.name)).map(entry=>({plan,entry,distance:distanceMeters(origin,entry.location)})));
 const coordinateKey=(location:Coord)=>location.map(n=>n.toFixed(6)).join(",");
 const entranceKey=(name:string,location:Coord)=>`${name}:${coordinateKey(location)}`;
 const entrances=new Map(Object.values(prepared.entries).flat().filter(entry=>entry.source==="amap").map(entry=>[entranceKey(entry.name,entry.location),entry]));
@@ -92,8 +93,8 @@ export async function POST(request:Request) {
           }catch(error){result.complete=false;result.errors.push(error instanceof MapApiError?error.message:"完整地铁方案暂未完成查询。");}
           if(!surfaceQualified&&!fullMetroQualified&&!stopped()&&!apiSignal.aborted) {
             stage("metro-segmented");
-            // Prove the full journey's actual street gates before any local
-            // ranking. A precomputed best tail can end at a different gate.
+            // Prioritize the full journey's stations and explicit street gates.
+            // Generic gate hints must resolve to real, numbered exits first.
             const proofs=new Map<string,Promise<Leg|null>>();
             let continueAccess=true;
             const querySurface=(mode:"walking"|"bicycling",origin:Coord,destination:Coord,from:string,to:string,originId?:string,destinationId?:string)=>{
@@ -111,8 +112,10 @@ export async function POST(request:Request) {
             if(recommendation){
               const station=(name:string)=>stationData.stations.find(s=>s.name===name);
               const boarding=station(recommendation.entry.stationName),alighting=station(recommendation.exit.stationName);
+              const entryGates=recommendedStreetGates(recommendation.entry,boarding?prepared.entries[boarding.id]??[]:[]);
+              const exitGates=recommendedStreetGates(recommendation.exit,alighting?prepared.entries[alighting.id]??[]:[]);
               let stationProof:Awaited<ReturnType<typeof stationMetro>>=null;
-              if(boarding&&alighting&&boarding.id!==alighting.id)try{
+              if(entryGates.length&&exitGates.length&&boarding&&alighting&&boarding.id!==alighting.id)try{
                 result.checked++;
                 stationProof=await stationMetro(boarding,alighting,apiOptions);
               }catch(error){accessError(error);}
@@ -122,7 +125,6 @@ export async function POST(request:Request) {
                   return roundLeg({...raw,measuredAt:stationProof!.measuredAt,
                     ...(raw.mode==="metro"?{origin:a?a.location as Coord:raw.origin,destination:b?b.location as Coord:raw.destination,originPoiId:a?.id,destinationPoiId:b?.id}:{} )});
                 });
-                const gateId=(gate:MetroGate)=>[...entrances.values()].find(entry=>entry.name===gate.name&&distanceMeters(entry.location,gate.location)<=3)?.id;
                 const first:Leg[]=[],last:Leg[]=[];
                 const id=`${office.id}-metro-recommended`;
                 const publish=()=>{
@@ -131,7 +133,7 @@ export async function POST(request:Request) {
                   if(!legs)return false;
                   const duration=sumLegDurations(legs);
                   const plan:Plan={id,officeId:office.id,mode:"metro",metroMethod:"segmented",title:`经${recommendation!.entry.stationName}站`,duration,limit:1200,qualified:qualified(duration,"metro"),legs,
-                    measuredAt:stationProof!.measuredAt,source:"amap",originalReferenceDuration:stationProof!.originalTotalDuration,originalReferenceScope:"stations",note:`两端接驳优先使用完整方案推荐的进出站口；地铁按车站到车站单独查询，计入站内换乘。地铁参考时刻：${METRO_DEPARTURE.label}。`};
+                    measuredAt:stationProof!.measuredAt,source:"amap",originalReferenceDuration:stationProof!.originalTotalDuration,originalReferenceScope:"stations",note:`优先使用完整方案推荐的车站；两端接驳按具体进出站口查询，地铁按车站到车站单独查询，计入站内换乘。地铁参考时刻：${METRO_DEPARTURE.label}。`};
                   const existing=result.plans.findIndex(p=>p.id===id);
                   if(existing<0||result.plans[existing].duration>duration){
                     if(existing>=0)result.plans[existing]=plan;else result.plans.push(plan);
@@ -143,14 +145,13 @@ export async function POST(request:Request) {
                 // at both ends as well, retaining every successful combination.
                 for(const mode of ["walking","bicycling"] as const){
                   if(stopped()||apiSignal.aborted||!continueAccess)break;
-                  const rec=recommendation;
                   const responses=await Promise.allSettled([
-                    querySurface(mode,input.location,rec.entry.location,input.name,rec.entry.name,originPoiId,gateId(rec.entry)),
-                    querySurface(mode,rec.exit.location,office.entrance as Coord,rec.exit.name,office.name,gateId(rec.exit),office.poiId),
+                    ...entryGates.map(gate=>querySurface(mode,input.location,gate.location,input.name,gate.name,originPoiId,gate.id)),
+                    ...exitGates.map(gate=>querySurface(mode,gate.location,office.entrance as Coord,gate.name,office.name,gate.id,office.poiId)),
                   ]);
                   responses.forEach((response,index)=>{
                     if(response.status==="rejected")accessError(response.reason);
-                    else if(response.value)(index===0?first:last).push(roundLeg(response.value));
+                    else if(response.value)(index<entryGates.length?first:last).push(roundLeg(response.value));
                   });
                   if(publish())break;
                 }
