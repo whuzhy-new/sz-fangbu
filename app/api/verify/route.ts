@@ -27,6 +27,15 @@ const coordinateKey=(location:Coord)=>location.map(n=>n.toFixed(6)).join(",");
 const entranceKey=(name:string,location:Coord)=>`${name}:${coordinateKey(location)}`;
 const entrances=new Map(Object.values(prepared.entries).flat().filter(entry=>entry.source==="amap").map(entry=>[entranceKey(entry.name,entry.location),entry]));
 
+function withinDeadline<T>(promise:Promise<T>,signal:AbortSignal):Promise<T|null> {
+  return new Promise(resolve=>{
+    const finish=(value:T|null)=>{signal.removeEventListener("abort",cancel);resolve(value);};
+    const cancel=()=>finish(null);
+    promise.then(finish,()=>finish(null));
+    if(signal.aborted)cancel();else signal.addEventListener("abort",cancel,{once:true});
+  });
+}
+
 export async function POST(request:Request) {
   let input:{location:Coord;name:string;officeIds:string[];poiId?:string};
   try{input=await request.json();}catch{return Response.json({error:"地址格式有误。"},{status:400});}
@@ -81,7 +90,7 @@ export async function POST(request:Request) {
             stage("metro-segmented");
             const candidates=candidatesByOffice.get(office.id)!;
             local??=localAccessTimes(input.location,[...targets.values()],request.url);
-            const measured=await local.catch(()=>null);
+            const measured=await withinDeadline(local,apiSignal);
             const times=candidates.map(candidate=>measured?.times[targetIndices.get(coordinateKey(candidate.entry.location))!]??{walking:null,bicycling:null});
             const ranked=rankAccessCandidates(candidates,times);
             if(measured){
@@ -89,7 +98,7 @@ export async function POST(request:Request) {
               send({type:"local-search",officeId:office.id,localSearch:result.localSearch});
             }
             if(!preparedReady){result.complete=false;result.errors.push("车站到车站的地铁方案正在重算，暂不使用旧方案判定。");}
-            if(!measured){result.complete=false;result.errors.push("本地路网暂不可用，已保留高德结果。");}
+            if(!measured&&!apiSignal.aborted){result.complete=false;result.errors.push("本地路网暂不可用，已保留高德结果。");}
             for(const {candidate,mode} of ranked.proofs) {
               if(stopped()||apiSignal.aborted)break;
               try{
@@ -116,7 +125,10 @@ export async function POST(request:Request) {
                   send({type:"plan",plan,preparedPlanId:candidate.plan.id,originalTotalDuration:candidate.plan.originalTotalDuration,originalReferenceScope:candidate.plan.originalReferenceScope});
                 }
                 if(plan.qualified)break;
-              }catch(error){result.complete=false;result.errors.push(error instanceof MapApiError?error.message:"接驳路线暂未完成查询。");break;}
+              }catch(error){
+                result.complete=false;result.errors.push(error instanceof MapApiError?error.message:"接驳路线暂未完成查询。");
+                if(apiSignal.aborted||!(error instanceof MapApiError)||!["NETWORK","REQUEST_TIMEOUT"].includes(error.code))break;
+              }
             }
             if(!result.plans.some(p=>p.qualified))result.complete=false;
           }

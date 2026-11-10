@@ -19,12 +19,12 @@ const offices=[{id:'innovation',name:'创新工区',poiId:'B0OFFICE01',walkingId
 const leg=(mode,duration,origin,destination,from,to)=>({mode,duration,origin,destination,from,to,
   label:mode,distance:100,paths:[],source:'amap',measuredAt});
 
-async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,elapsedPerCall=0}={}){
+async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,elapsedPerCall=0}={}){
   const calls=[],work=[];
-  let elapsed=0,budget;
+  let elapsed=0,budget,accessIndex=0;
   const deadline=deadlineController??new AbortController();
   const advance=()=>{elapsed+=elapsedPerCall;if(elapsed>=budget)deadline.abort();};
-  class MapApiError extends Error{}
+  class MapApiError extends Error{constructor(message,code){super(message);this.code=code;}}
   const stations=Array.from({length:stationCount},(_,i)=>({id:`nanyou-${i}`,name:i?`南油${i}`:'南油',location:point}));
   const plans=Object.fromEntries(offices.map(office=>[office.id,Object.fromEntries(stations.map(station=>[station.id,{id:`${office.id}-${station.id}`,
     stationId:station.id,stationName:station.name,officeId:office.id,duration:fixed[0]+fixed[1],measuredAt,
@@ -36,7 +36,7 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
   const dependencies={
     '@/public/data/offices.json':{default:offices},
     '@/data/metro-index.json':{default:{complete:true,methodVersion:'amap-station-pair-v3',durationRounding:commute.DURATION_ROUNDING_VERSION,plans,entries}},
-    '@/lib/local-access-server':{async localAccessTimes(origin,targets){work.push('local-model');if(localFailure)throw new Error('unavailable');return {times:targets.map(()=>({walking:modelAccess,bicycling:modelAccess})),elapsedMs:1,osmDate:'2026-11-07'};}},
+    '@/lib/local-access-server':{async localAccessTimes(origin,targets){work.push('local-model');if(localDeadline){deadline.abort();return new Promise(()=>{});}if(localFailure)throw new Error('unavailable');return {times:targets.map(()=>({walking:modelAccess,bicycling:modelAccess})),elapsedMs:1,osmDate:'2026-11-07'};}},
     '@/lib/segmented-search':segmentedSearch,
     '@/public/data/stations.json':{default:{stations:[...stations,{id:'yuehaimen',name:'粤海门',location:[113.945531,22.532695]}]}},
     '@/lib/commute':commute,
@@ -46,9 +46,10 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
         const office=offices.find(o=>o.name===to);
         calls.push(`${office?.id??'access'}:${mode}`);
         work.push(calls.at(-1));advance();
-        const duration=office?(surface[office.id]?.[mode]??(mode==='walking'?1830:1230)):access;
+        const duration=office?(surface[office.id]?.[mode]??(mode==='walking'?1830:1230)):(Array.isArray(access)?access[Math.min(accessIndex++,access.length-1)]:access);
         if(office&&abortAfterSurface)deadlineController.abort();
         if(duration==='error')throw new MapApiError('地图查询失败');
+        if(duration?.error)throw new MapApiError('接驳查询暂未完成',duration.error);
         return duration===null?null:{...leg(mode,duration,origin,destination,from,to),...surfaceRouteParams(mode,origin,destination,options).endpoints};
       },
       async fullMetro(origin,destination,from,to,options){
@@ -202,9 +203,9 @@ test('short-circuiting one office does not skip verification for another office'
   assert.deepEqual(events.filter(e=>e.type==='stage').map(e=>[e.officeId,e.stage]),[['innovation','surface'],['prince','surface'],['prince','metro-full']]);
 });
 
-test('every local combination is compared before at most three AMap access proofs',async()=>{
+test('local combinations are ranked before continuing beyond three AMap access proofs',async()=>{
   const {calls,events,results:[result]}=await verify({entryCount:40,stationCount:3,access:900});
-  assert.equal(calls.filter(call=>call.startsWith('access:')).length,3);
+  assert.ok(calls.filter(call=>call.startsWith('access:')).length>3);
   assert.equal(result.localSearch.total,240);
   assert.equal(result.localSearch.source,'model');
   assert.equal(result.complete,false);
@@ -241,9 +242,9 @@ test('the total deadline stops later APIs and avoids loading the model after can
   assert.ok(result.errors.includes('高德核验超时，已有结果已保留。'));
 });
 
-test('sequential hosted API calls can finish beyond 4.5 seconds while streaming earlier results',async()=>{
-  const {elapsed,events,results:[result]}=await verify({elapsedPerCall:1600});
-  assert.ok(elapsed>4500);
+test('sequential hosted API calls can finish beyond 25 seconds while streaming earlier results',async()=>{
+  const {elapsed,events,results:[result]}=await verify({elapsedPerCall:7000});
+  assert.ok(elapsed>25000&&elapsed<60000);
   assert.ok(result.plans.some(p=>p.metroMethod==='segmented'&&p.qualified));
   assert.deepEqual(result.errors,[]);
   assert.equal(result.complete,true);
@@ -251,12 +252,38 @@ test('sequential hosted API calls can finish beyond 4.5 seconds while streaming 
 });
 
 test('the overall deadline still bounds slow verification and retains completed plans',async()=>{
-  const {elapsed,calls,results:[result]}=await verify({elapsedPerCall:9000});
-  assert.equal(elapsed,27000);
-  assert.equal(calls.length,3);
+  const {elapsed,calls,results:[result]}=await verify({elapsedPerCall:9000,access:900,entryCount:40});
+  assert.equal(elapsed,63000);
+  assert.equal(calls.length,7);
   assert.equal(result.complete,false);
   assert.ok(result.plans.some(p=>p.mode==='walking'));
   assert.ok(result.errors.includes('高德核验超时，已有结果已保留。'));
+});
+
+test('the deadline also closes the stream when the local network has not finished loading',{timeout:1000},async()=>{
+  const {calls,results:[result]}=await verify({localDeadline:true});
+  assert.equal(calls.filter(call=>call.startsWith('access:')).length,0);
+  assert.ok(result.errors.includes('高德核验超时，已有结果已保留。'));
+  assert.ok(!result.errors.includes('本地路网暂不可用，已保留高德结果。'));
+  assert.ok(result.plans.length>0);
+});
+
+test('a qualifying fourth access proof is not discarded by a fixed query cap',async()=>{
+  const {calls,results:[result]}=await verify({entryCount:4,stationCount:3,access:[900,900,900,200]});
+  assert.equal(calls.filter(call=>call.startsWith('access:')).length,4);
+  assert.ok(result.plans.some(p=>p.metroMethod==='segmented'&&p.qualified));
+});
+
+test('a transient access timeout does not prevent checking the next candidate',async()=>{
+  const {calls,results:[result]}=await verify({entryCount:4,access:[{error:'REQUEST_TIMEOUT'},200]});
+  assert.equal(calls.filter(call=>call.startsWith('access:')).length,2);
+  assert.ok(result.plans.some(p=>p.metroMethod==='segmented'&&p.qualified));
+});
+
+test('a quota error stops access queries rather than consuming the remaining minute',async()=>{
+  const {calls,results:[result]}=await verify({entryCount:4,access:[{error:'BUDGET_LIMIT'},200]});
+  assert.equal(calls.filter(call=>call.startsWith('access:')).length,1);
+  assert.ok(!result.plans.some(p=>p.qualified));
 });
 
 test('unavailable local data falls back to AMap proofs without claiming a full local comparison',async()=>{

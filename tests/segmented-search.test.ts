@@ -11,13 +11,14 @@ test('exact road access can prioritize a farther entrance over a nearer one',()=
   assert.equal(result.summary.total,4);
 });
 
-test('all candidates are compared, while proofs include at most two exits of one station',()=>{
+test('all feasible gates remain available after prioritizing two proofs per station',()=>{
   const candidates=Array.from({length:5},(_,s)=>Array.from({length:12},(_,e)=>candidate(`s${s}`,`e${e}`,100+s*100+e))).flat();
   const result=rankAccessCandidates(candidates,candidates.map(()=>({walking:400,bicycling:200})));
   assert.equal(result.tasks.length,120);
   assert.equal(result.summary.total,120);
-  assert.equal(result.proofs.length,3);
-  assert.equal(new Set(result.proofs.map(task=>task.candidate.plan.stationId)).size,2);
+  assert.ok(result.proofs.some(task=>task.key==='s4:e11:walking'));
+  assert.equal(new Set(result.proofs.slice(0,10).map(task=>task.candidate.plan.stationId)).size,5);
+  assert.equal(new Set(result.proofs.map(task=>task.key)).size,result.proofs.length);
 });
 
 test('missing road connections remain unknown and can still be checked by AMap',()=>{
@@ -44,7 +45,6 @@ test('a nearby metro gate gets a walking proof before optimistic bicycle estimat
   const result=rankAccessCandidates([candidate('near','c',71,1020),candidate('near','d',75,1020),candidate('far','a',700,600)],
     [{walking:120,bicycling:10},{walking:130,bicycling:11},{walking:800,bicycling:200}]);
   assert.equal(result.proofs[0].key,'near:c:walking');
-  assert.equal(result.proofs.length,3);
   assert.ok(result.proofs.some(task=>task.candidate.plan.stationId==='far'));
 });
 
@@ -54,5 +54,6 @@ test('a nearby station also checks a walking entrance on the opposite side',()=>
   a.entry.location=[point[0]+.000670,point[1]+.000416];
   d.entry.location=[point[0]+.000627,point[1]-.000345];
   const result=rankAccessCandidates([c,a,d,far],[{walking:108,bicycling:51},{walking:107,bicycling:494},{walking:66,bicycling:32},{walking:800,bicycling:200}]);
-  assert.deepEqual(result.proofs.map(task=>task.key),['near:c:walking','near:a:walking','far:x:bicycling']);
+  assert.deepEqual(result.proofs.slice(0,3).map(task=>task.key),['near:c:walking','near:a:walking','far:x:bicycling']);
+  assert.ok(result.proofs.some(task=>task.key==='near:d:walking'));
 });

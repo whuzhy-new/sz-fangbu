@@ -1,9 +1,8 @@
 import {roundDuration, type Coord} from "./commute.ts";
 import type {AccessTime,AccessMode} from "./local-road-network.ts";
 
-export const ACCESS_PROOF_LIMIT=3;
 // Stream early results; allow sequential route queries to finish on hosted Workers.
-export const VERIFY_TIMEOUT_MS=25000;
+export const VERIFY_TIMEOUT_MS=60000;
 export type AccessCandidate={plan:{stationId:string;duration:number};entry:{id:string;location:Coord};distance:number};
 
 /** Compare every prepared entrance/mode; model times rank API proofs only. */
@@ -42,12 +41,13 @@ export function rankAccessCandidates<T extends AccessCandidate>(candidates:T[],t
   const preferred=[nearbyWalking,opposite].filter((task):task is typeof tasks[number]=>!!task);
   const preferredKeys=new Set(preferred.map(task=>task.key));
   const ordered=[...preferred,...sorted.filter(task=>!preferredKeys.has(task.key))];
-  const perStation=new Map<string,number>(),proofs:typeof tasks=[];
+  const perStation=new Map<string,number>(),proofs:typeof tasks=[],deferred:typeof tasks=[];
   for(const task of ordered) {
     const station=task.candidate.plan.stationId,count=perStation.get(station)??0;
-    if(count>=2)continue;
+    // Give different stations a chance first, then retain the remaining gates
+    // for the same shared deadline instead of cutting off after three proofs.
+    if(count>=2){deferred.push(task);continue;}
     proofs.push(task);perStation.set(station,count+1);
-    if(proofs.length===ACCESS_PROOF_LIMIT)break;
   }
-  return {tasks,proofs,summary};
+  return {tasks,proofs:[...proofs,...deferred],summary};
 }
