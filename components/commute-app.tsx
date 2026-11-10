@@ -7,7 +7,7 @@ import AnimatedCollapse from "./animated-collapse";
 import SavedPlaces from "./saved-places";
 import ModeIcon from "./mode-icon";
 import {PREFERENCES_KEY,SAVED_PLACES_KEY,placeKey,readPreferences,readSavedPlaces,rememberPlace,toggleFavorite} from "@/lib/commute-storage";
-import {assessMapPick} from "@/lib/coverage";
+import {assessMapPick,firstQueryStage} from "@/lib/coverage";
 import {visiblePlans} from "@/lib/plan-results";
 import {amapPoiId,placePoiId,LIMITS,METRO_DRILL_DOWN_FROM,MODE_LABEL,QUERY_STAGE_LABEL,ROUND_UP_SECONDS,withinShenzhen,type Coord,type Mode,type Office,type Place,type Plan,type QueryStage,type Verification} from "@/lib/commute";
 import type {Coverage,RailData} from "@/lib/map-types";
@@ -85,7 +85,7 @@ export default function CommuteApp() {
     const controller=new AbortController();
     Promise.all([
       fetch("/api/config",{signal:controller.signal}).then(response=>response.json()),
-      fetch("/data/coverage.json",{signal:controller.signal}).then(response=>response.ok?response.json():null),
+      fetch("/data/coverage-bidirectional.json",{signal:controller.signal}).then(response=>response.ok?response.json():null),
       fetch("/data/metro-plans.json",{signal:controller.signal}).then(response=>response.ok?response.json():null)
     ]).then(([config,cov,metro])=>{
       setOffices((config as {offices:Office[]}).offices??[]);
@@ -120,7 +120,7 @@ export default function CommuteApp() {
       return next;
     });
     if(resetResults||ids.includes(activeRef.current)){manualPlan.current=false;setSelectedPlan(null);}
-    setLoading(true);setQueryStage("surface");setQueryStopped(false);setError("");setMobileOpen(true);setCurrentOffice(ids[0]);
+    setLoading(true);setQueryStage(firstQueryStage(coverage,ids[0],place.location));setQueryStopped(false);setError("");setMobileOpen(true);setCurrentOffice(ids[0]);
     try {
       const response=await fetch("/api/verify",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:place.location,name:place.name,poiId:placePoiId(place),officeIds:ids,refresh}),signal:controller.signal});
       if(!response.ok){const data=await response.json() as {error?:string};throw new Error(data.error??"路线查询失败，请重试。");}
@@ -137,10 +137,10 @@ export default function CommuteApp() {
       const handle=(event:any)=>{
         if(token!==requestId.current)return;
         if(event.type==="office-start"){
-          settled.current.delete(event.officeId);setCurrentOffice(event.officeId);setQueryStage("surface");
+          settled.current.delete(event.officeId);setCurrentOffice(event.officeId);
           setResults(previous=>({...previous,[event.officeId]:{officeId:event.officeId,plans:[],checked:0,complete:false,errors:[],measuredAt:new Date().toISOString()}}));
         }
-        if(event.type==="stage"&&Object.hasOwn(QUERY_STAGE_LABEL,event.stage))setQueryStage(event.stage as QueryStage);
+        if((event.type==="stage"||event.type==="office-start")&&Object.hasOwn(QUERY_STAGE_LABEL,event.stage))setQueryStage(event.stage as QueryStage);
         if(event.type==="local-search")setResults(previous=>{
           const old=previous[event.officeId];
           return old?{...previous,[event.officeId]:{...old,localSearch:event.localSearch}}:previous;
@@ -156,9 +156,9 @@ export default function CommuteApp() {
         }
         if(event.type==="office-result"){
           const next=event.result as Verification;settled.current.add(next.officeId);
-          if(next.reused)next.plans=next.plans.map(plan=>hydratePreparedPaths(plan));
-          setResults(previous=>({...previous,[next.officeId]:next.reused?next:{...next,plans:next.plans.map(plan=>previous[next.officeId]?.plans.find(old=>old.id===plan.id)??plan)}}));
-          if(next.reused&&next.officeId===activeRef.current)setSelectedPlan(previous=>manualPlan.current
+          next.plans=next.plans.map(plan=>hydratePreparedPaths(plan));
+          setResults(previous=>({...previous,[next.officeId]:next}));
+          if(next.officeId===activeRef.current)setSelectedPlan(previous=>manualPlan.current
             ?next.plans.find(plan=>plan.id===previous?.id)??null
             :visiblePlans(next.plans).find(plan=>plan.qualified)??null);
         }
@@ -177,7 +177,7 @@ export default function CommuteApp() {
     } finally {
       if(token===requestId.current){setLoading(false);setCurrentOffice("");}
     }
-  },[]);
+  },[coverage]);
 
   const choose=useCallback((place:Place)=>{
     const point={...place,location:place.entrance??place.location};
@@ -302,7 +302,7 @@ export default function CommuteApp() {
   const analysis=(<>
     {showAnalysis&&home&&<div className="selected-home"><span>拖动标记可调整入口</span><div className="selected-home-actions"><button className="icon-button place-save-button" aria-label={homeSaved?"取消收藏地点":"收藏地点"} title={homeSaved?"取消收藏":"收藏地点"} aria-pressed={homeSaved} onClick={()=>setFavorites(previous=>toggleFavorite(previous,home))}><Star size={16} fill={homeSaved?"currentColor":"none"} aria-hidden="true"/></button><button className="text-button" onClick={()=>verify(home,[activeId],{refresh:true})} disabled={loading}><RotateCw size={13} aria-hidden="true"/>重新核验</button></div></div>}
           {storageError&&<p className="storage-error" role="status">{storageError}</p>}
-          {showAnalysis&&home&&<RouteResults result={result} plans={plans} selectedPlan={selectedPlan} loading={activeLoading} queryStage={queryStage} stopped={queryStopped&&!settled.current.has(activeId)} error={error} onStop={stopVerification} onSelect={plan=>{manualPlan.current=true;setSelectedPlan(selectedPlan?.id===plan.id?null:plan);}}/>}
+          {showAnalysis&&home&&<RouteResults key={`${activeId}:${home.id}:${home.location.join(",")}`} result={result} plans={plans} selectedPlan={selectedPlan} loading={activeLoading} queryStage={queryStage} stopped={queryStopped&&!settled.current.has(activeId)} error={error} onStop={stopVerification} onSelect={plan=>{manualPlan.current=true;setSelectedPlan(selectedPlan?.id===plan.id?null:plan);}}/>}
           {!home&&error&&<p className="query-error" role="alert">{error}</p>}
           {loading&&!activeLoading&&<div className="background-check" role="status"><LoaderCircle size={14} className="spin" aria-hidden="true"/><span>正在查询{QUERY_STAGE_LABEL[queryStage]}方案</span><button className="text-button" onClick={stopVerification}>停止</button></div>}
   </>);
@@ -321,8 +321,8 @@ export default function CommuteApp() {
     {contentTool==="rules"&&<div className="tool-rules">
       <div className="tool-limits">{modes.map(mode=><div className={mode} key={mode}><span><ModeIcon mode={mode} size={14}/>{mode==="walking"?"步行":mode==="bicycling"?"自行车":"地铁"}</span><strong>{LIMITS[mode]/60}<small>分内</small></strong></div>)}</div>
       <ul className="tool-rule-list">
-        <li><MapPin size={15} aria-hidden="true"/><div><h3>起终点</h3><p>小区门口 → 办公地点</p></div></li>
-        <li><ListOrdered size={15} aria-hidden="true"/><div><h3>查询顺序</h3><p>步行／骑行 → 完整地铁 → 分段地铁</p><p>步行或骑行达标即停止</p><p>地铁 {METRO_DRILL_DOWN_FROM/60}～{LIMITS.metro/60} 分仍会继续比较</p></div></li>
+        <li><MapPin size={15} aria-hidden="true"/><div><h3>起终点</h3><p>小区门口 ↔ 办公地点</p><p>任一方向达标即可</p></div></li>
+        <li><ListOrdered size={15} aria-hidden="true"/><div><h3>查询顺序</h3><p>步行／骑行 → 完整地铁 → 分段地铁</p><p>步行或骑行达标后结束该方向的查询</p><p>地铁 {METRO_DRILL_DOWN_FROM/60}～{LIMITS.metro/60} 分仍会继续比较</p></div></li>
         <li><TrainFront size={15} aria-hidden="true"/><div><h3>完整地铁</h3><p>取高德完整路线的总时长</p></div></li>
         <li><Route size={15} aria-hidden="true"/><div><h3>分段地铁</h3><p>进站接驳＋地铁＋出站接驳</p><p>接驳可步行或骑行</p><p>地铁段只计乘车和站内换乘</p></div></li>
         <li><Timer size={15} aria-hidden="true"/><div><h3>时长取整</h3><p>满 {ROUND_UP_SECONDS} 秒进 1 分，不足则舍去</p><p>每段至少 1 分，先取整再相加</p></div></li>

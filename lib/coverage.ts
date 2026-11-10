@@ -6,6 +6,7 @@ export type CoverageAssessment={status:"inside"|"edge"|"outside"|"unavailable";m
 export const COVERAGE_FEATHER_METERS=40;
 export const COVERAGE_EDGE_METERS=COVERAGE_FEATHER_METERS*3;
 export const MAP_PICK_MAX_DISTANCE_METERS=500;
+const SURFACE_SEARCH_BUFFER_METERS=1000;
 export type MapPickAssessment={allowed:boolean;reason:"within-range"|"too-far"|"unavailable";distanceMeters:number|null};
 const modes:Mode[]=["walking","bicycling","metro"];
 
@@ -57,6 +58,20 @@ function boundaryDistanceMeters(point:Coord,geometry:CoverageGeometry):number {
     closest=Math.min(closest,Math.hypot(ax+t*dx,ay+t*dy));
   }
   return closest;
+}
+
+export function firstQueryStage(coverage:Coverage|null,officeId:string,point:Coord):"surface"|"metro-full" {
+  if(!coverage?.metadata.complete||point.length!==2||!point.every(Number.isFinite))return "surface";
+  const features=coverageFeatures(coverage).filter(feature=>feature.properties.officeId===officeId);
+  const farFromSurface=(["walking","bicycling"] as const).every(mode=>{
+    const layers=features.filter(feature=>feature.properties.mode===mode);
+    return layers.length>0&&layers.every(({geometry})=>{
+      if(geometryCovers(point,geometry))return false;
+      const distance=boundaryDistanceMeters(point,geometry);
+      return Number.isFinite(distance)&&distance>SURFACE_SEARCH_BUFFER_METERS+1e-6;
+    });
+  });
+  return farFromSurface?"metro-full":"surface";
 }
 
 /** Distance to the union of all three source layers for the selected office. */

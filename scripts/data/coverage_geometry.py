@@ -18,7 +18,7 @@ def fill_small_holes(geometry,max_area=SMALL_HOLE_M2,area_measure=None):
     measure=area_measure or (lambda g:g.area)
     return unary_union([Polygon(p.exterior,[r for r in p.interiors if measure(Polygon(r))>max_area]) for p in polygon_parts(geometry)])
 
-def complete_small_holes(layers,max_area=SMALL_HOLE_M2,area_measure=None):
+def complete_small_holes(layers,max_area=SMALL_HOLE_M2,area_measure=None,*,area_tolerance=0):
     measure=area_measure or (lambda g:g.area)
     before=unary_union(list(layers.values()))
     result={mode:fill_small_holes(g,max_area,measure) for mode,g in layers.items()}
@@ -29,7 +29,7 @@ def complete_small_holes(layers,max_area=SMALL_HOLE_M2,area_measure=None):
             owner=max(result,key=lambda mode:result[mode].boundary.intersection(hole.boundary).length)
             result[owner]=result[owner].union(hole)
     after=unary_union(list(result.values()))
-    assert all(measure(h)>max_area for h in enclosed_holes(after))
+    assert all(measure(h)>max_area or measure(h)<=area_tolerance for h in enclosed_holes(after))
     return result,{'maxAreaM2':max_area,'holesBefore':len(enclosed_holes(before)),
         'holesAfter':len(enclosed_holes(after)),'addedAreaM2':round(measure(after.difference(before)),1)}
 

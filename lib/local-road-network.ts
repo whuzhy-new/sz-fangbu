@@ -7,6 +7,22 @@ export type RoadGraph={offsets:Uint32Array;targets:Uint32Array;costs:Float32Arra
 export type RoadNetwork={manifest:NetworkManifest;xy:Float32Array;flags:Uint8Array;cells:Uint32Array;walking:RoadGraph;bicycling:RoadGraph};
 export type AccessTime={walking:number|null;bicycling:number|null};
 
+/** Build incoming edges so a search rooted at home can score gate → home. */
+export function reverseRoadGraph(graph:RoadGraph):RoadGraph {
+  const offsets=new Uint32Array(graph.offsets.length);
+  for(const target of graph.targets)offsets[target+1]++;
+  for(let node=1;node<offsets.length;node++)offsets[node]+=offsets[node-1];
+  const cursor=offsets.slice(0,-1);
+  const targets=new Uint32Array(graph.targets.length),costs=new Float32Array(graph.costs.length);
+  for(let source=0;source<cursor.length;source++){
+    for(let edge=graph.offsets[source];edge<graph.offsets[source+1];edge++){
+      const index=cursor[graph.targets[edge]]++;
+      targets[index]=source;costs[index]=graph.costs[edge];
+    }
+  }
+  return {offsets,targets,costs};
+}
+
 // GCJ02 -> WGS84 -> UTM49N, matching the offline graph's EPSG:32649.
 function wgsToGCJ(lon:number,lat:number):Coord {
   const x=lon-105,y=lat-35,p=Math.PI;

@@ -13,7 +13,7 @@ from coverage_geometry import complete_small_holes,apply_verified_communities,po
 
 RES=50
 def fixed_egress_for_office(office, config):
-    if (office['id'],office['poiId'],office['entrance'])==(config['officeId'],config['officePoiId'],config['officeEntrance']):
+    if (office['id'],office.get('poiId'),office['entrance'])==(config['officeId'],config['officePoiId'],config['officeEntrance']):
         return config['routes']
     return {}
 
@@ -43,11 +43,12 @@ def export_index(rail, public_path=None, server_path=None):
         skinny['plans'][office]={sid:{**p,'legs':[{**leg,'paths':[]} for leg in p['legs']]} for sid,p in plans.items()}
     atomic_json(server_path or ROOT/'data/metro-index.json',skinny)
 
-def generate_coverage(rail, offices, net, correction, corrections):
+def generate_coverage(rail, offices, net, correction, corrections, *, to_home=False):
     """Generate only the supplied offices; callers may stage before installation."""
-    if not rail['complete'] or rail.get('methodVersion')!='amap-station-pair-v3':
+    method='amap-return-station-pair-v1' if to_home else 'amap-station-pair-v3'
+    if not rail['complete'] or rail.get('methodVersion')!=method:
         raise RuntimeError('Verified station-pair preparation is not complete.')
-    profiles={profile['officeId']:profile for profile in (
+    profiles={} if to_home else {profile['officeId']:profile for profile in (
         json.loads(path.read_text()) for path in (ROOT/'data/office-profiles').glob('*-fixed-egress.json')
     )}
     egress_by_office={
@@ -57,10 +58,10 @@ def generate_coverage(rail, offices, net, correction, corrections):
     updated_corrections=[]
     for office in offices:
         for plan in rail['plans'][office['id']].values():
-            if not plan['legs'] or plan['legs'][-1]['destination']!=office['entrance']:
+            leg=plan['legs'][0 if to_home else -1] if plan['legs'] else None
+            if not leg or leg['origin' if to_home else 'destination']!=office['entrance']:
                 raise RuntimeError('Fixed route has a stale office endpoint: '+office['id'])
-            tail=plan['legs'][-1]
-            if office.get('walkingIdentity')=='poi' and tail['mode']=='walking' and tail.get('routingIdentity')!='poi':
+            if office.get('walkingIdentity')=='poi' and leg['mode']=='walking' and leg.get('routingIdentity')!='poi':
                 raise RuntimeError('Fixed route has a stale office routing identity: '+office['id'])
         for feature in corrections:
             props=feature['properties']
@@ -87,7 +88,8 @@ def generate_coverage(rail, offices, net, correction, corrections):
     for office in offices:
         oid=office['id'];fields={}
         for mode,limit in [('walking',1800),('bicycling',1200)]:
-            fields[mode]=net.field([(office['entrance'],0)],mode,limit=3600)
+            scale=correction.accessRatio if to_home and mode=='bicycling' else 1
+            fields[mode]=net.field([(office['entrance'],0)],mode,limit=3600,edge_scale=scale,to_home=to_home)
         targets=[]
         for sid,p in rail['plans'][oid].items():
             tail=egress_by_office[oid].get(p.get('metroApi',{}).get('destinationName'))
@@ -98,7 +100,7 @@ def generate_coverage(rail, offices, net, correction, corrections):
                 if entry['source']=='amap':targets.append((entry['location'],fixed_duration))
         for mode in ['walking','bicycling']:
             # Scale bicycle access graph costs only; fixed rail+office costs are actual AMap values.
-            fields['metro-'+mode]=net.field(targets,mode,limit=1230,edge_scale=correction.accessRatio if mode=='bicycling' else 1)
+            fields['metro-'+mode]=net.field(targets,mode,limit=1230,edge_scale=correction.accessRatio if mode=='bicycling' else 1,to_home=to_home)
         possible=np.zeros(len(net.xy),dtype=bool)
         for key,field in fields.items():possible|=field<= (2300 if key=='walking' else 2000 if key=='bicycling' else 1230)
         pts=net.xy[possible]
@@ -110,7 +112,7 @@ def generate_coverage(rail, offices, net, correction, corrections):
             speed=1.25 if mode=='walking' else 10.755532740416204/3.6
             snap=distances/speed;snap[distances>150]=np.inf
             direct=(fields[mode][ids]+snap).min(axis=1)
-            values[mode]=correction.direct(oid,grid,direct) if mode=='bicycling' else direct
+            values[mode]=correction.direct(oid,grid,direct) if mode=='bicycling' and not to_home else direct
             values['metro-'+mode]=(fields['metro-'+mode][ids]+snap*(correction.accessRatio if mode=='bicycling' else 1)).min(axis=1)
         values['metro']=np.minimum(values.pop('metro-walking'),values.pop('metro-bicycling'))
         geometries={}
@@ -140,7 +142,8 @@ def generate_coverage(rail, offices, net, correction, corrections):
     for office in offices:
         group=[f for f in features if f['properties']['officeId']==office['id']]
         layers={f['properties']['mode']:shape(f['geometry']) for f in group}
-        completed,cleanup[office['id']]=complete_small_holes(layers,area_measure=gcj_area)
+        # Float intersections can leave slivers below the six-decimal coordinate grid.
+        completed,cleanup[office['id']]=complete_small_holes(layers,area_measure=gcj_area,area_tolerance=.01)
         for f in group:
             geometry=completed[f['properties']['mode']]
             assert geometry.is_valid

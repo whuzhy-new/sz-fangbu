@@ -6,6 +6,7 @@ import ts from 'typescript';
 import * as commute from '../lib/commute.ts';
 import * as segmentedSearch from '../lib/segmented-search.ts';
 import * as metroGates from '../lib/metro-gates.ts';
+import * as coverageGeometry from '../lib/coverage.ts';
 import {reviewRoutes} from '../lib/route-review.ts';
 import {surfaceRouteParams,transitRouteParams} from '../lib/amap-route-params.ts';
 
@@ -22,8 +23,8 @@ const profiles=Object.fromEntries(offices.map(({id})=>[id,JSON.parse(readFileSyn
 const leg=(mode,duration,origin,destination,from,to)=>({mode,duration,origin,destination,from,to,
   label:mode,distance:100,paths:[],source:'amap',measuredAt});
 
-async function verify({surface={},direct={},access=200,fixed=[720,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,unnamedAccess=false,elapsedPerCall=0,recommendedMetro,recommendedTail=150,stationDuration=720,stationLegs,sharedCache,refresh=false,fixedEgressOffices=[],arrival='粤海门'}={}){
-  const calls=[],work=[],requests=[],stationRequests=[];
+async function verify({surface={},direct={},access=200,fixed=[720,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,unnamedAccess=false,elapsedPerCall=0,recommendedMetro,recommendedTail=150,stationDuration=720,stationLegs,sharedCache,refresh=false,fixedEgressOffices=[],arrival='粤海门',returnRoute,coverage=null}={}){
+  const calls=[],work=[],requests=[],stationRequests=[],returnRequests=[];
   let elapsed=0,budget,accessIndex=0;
   const deadline=deadlineController??new AbortController();
   const advance=()=>{elapsed+=elapsedPerCall;if(elapsed>=budget)deadline.abort();};
@@ -42,11 +43,25 @@ async function verify({surface={},direct={},access=200,fixed=[720,150],officeIds
       ?{...profile,officePoiId:office.poiId,officeEntrance:office.entrance}
       :profile}];
   }));
+  const boarding=[113.945531,22.532695];
+  const returnAccess=Object.fromEntries(offices.map(office=>[office.id,{'粤海门':{
+    ...leg('walking',100,office.entrance,boarding,office.name,'粤海门E口'),
+    originPoiId:office.poiId,destinationPoiId:'B0EXIT0001',routingIdentity:'poi',
+  }}]));
+  const returnPlans=Object.fromEntries(offices.map(office=>[office.id,returnRoute?.prepared?{'nanyou-0':{
+    id:`${office.id}-nanyou-0-return`,stationId:'nanyou-0',stationName:'南油',officeId:office.id,
+    duration:840,measuredAt,legs:[returnAccess[office.id]['粤海门'],leg('metro',720,boarding,point,'粤海门站','南油站')],
+  }}:{}]));
   const dependencies={
     '@/public/data/offices.json':{default:offices},
+    '@/public/data/coverage-bidirectional.json':{default:coverage},
+    '@/lib/coverage':coverageGeometry,
     ...profileModules,
     '@/data/metro-index.json':{default:{complete:true,methodVersion:'amap-station-pair-v3',durationRounding:commute.DURATION_ROUNDING_VERSION,plans,entries}},
-    '@/lib/local-access-server':{async localAccessTimes(origin,targets){work.push('local-model');if(localDeadline){deadline.abort();return new Promise(()=>{});}if(localFailure)throw new Error('unavailable');return {times:targets.map(()=>({walking:modelAccess,bicycling:modelAccess})),elapsedMs:1,osmDate:'2026-11-07'};}},
+    '@/data/metro-return.json':{default:{complete:true,methodVersion:'amap-return-station-pair-v1',
+      durationRounding:commute.DURATION_ROUNDING_VERSION,departureDate:'2026-11-09',departureTime:'09:00',
+      plans:returnPlans,access:returnAccess,officeEndpoints:Object.fromEntries(offices.map(o=>[o.id,o]))}},
+    '@/lib/local-access-server':{async localAccessTimes(origin,targets,url,toHome){work.push(toHome?'return-model':'local-model');if(localDeadline){deadline.abort();return new Promise(()=>{});}if(localFailure)throw new Error('unavailable');return {times:targets.map(()=>({walking:modelAccess,bicycling:modelAccess})),elapsedMs:1,osmDate:'2026-11-07'};}},
     '@/lib/segmented-search':segmentedSearch,
     '@/lib/metro-gates':metroGates,
     '@/lib/verification-cache':{
@@ -57,8 +72,16 @@ async function verify({surface={},direct={},access=200,fixed=[720,150],officeIds
     '@/public/data/stations.json':{default:{stations:[...stations,{id:'yuehaimen',name:'粤海门',location:[113.945531,22.532695]}]}},
     '@/lib/commute':commute,
     '@/lib/amap-server':{
-      MapApiError,METRO_DEPARTURE:{label:'2026-11-09 09:00'},
+      MapApiError,METRO_DEPARTURE:{label:'2026-11-09 09:00',date:'2026-11-09',time:'09-00'},
       async surfaceLeg(mode,origin,destination,from,to,options){
+        if(to==='测试小区门口'){
+          returnRequests.push({mode,origin,destination,from,to,options});
+          if(!returnRoute)return null;
+          const fromOffice=offices.some(o=>o.name===from);
+          const duration=fromOffice?returnRoute.surface?.[mode]:returnRoute.egress;
+          if(duration==='error')throw new MapApiError('返程查询超时','REQUEST_TIMEOUT');
+          return duration==null?null:{...leg(mode,duration,origin,destination,from,to),...surfaceRouteParams(mode,origin,destination,options).endpoints};
+        }
         const office=offices.find(o=>o.name===to);
         const tail=office&&from!=='测试小区门口';
         calls.push(`${tail?'tail':office?.id??'access'}:${mode}`);
@@ -71,6 +94,12 @@ async function verify({surface={},direct={},access=200,fixed=[720,150],officeIds
         return duration===null?null:{...leg(mode,duration,origin,destination,from,to),...surfaceRouteParams(mode,origin,destination,options).endpoints};
       },
       async fullMetro(origin,destination,from,to,options){
+        if(to==='测试小区门口'){
+          returnRequests.push({mode:'metro-full',origin,destination,from,to,options});
+          const duration=returnRoute?.full;
+          return duration==null?null:{...leg('metro',duration,origin,destination,from,to),kind:'full-transit',recommendedMetro:returnRoute.recommendation,
+            ...transitRouteParams(origin,destination,options).endpoints};
+        }
         const office=offices.find(o=>o.name===to);
         calls.push(`${office.id}:direct`);
         work.push(calls.at(-1));advance();
@@ -106,13 +135,14 @@ async function verify({surface={},direct={},access=200,fixed=[720,150],officeIds
   const events=(await response.text()).trim().split('\n').map(JSON.parse);
   assert.equal(events.at(-1).type,'done');
   assert.ok(!events.some(e=>e.type==='error'));
-  return {calls,work,requests,stationRequests,elapsed,events,results:events.filter(e=>e.type==='office-result').map(e=>e.result)};
+  return {calls,work,requests,stationRequests,returnRequests,elapsed,events,results:events.filter(e=>e.type==='office-result').map(e=>e.result)};
 }
 
 test('a complete result is reused across requests without spending more AMap calls',async()=>{
   const sharedCache=new Map();
-  const initial=await verify({sharedCache,surface:{innovation:{walking:1200}}});
-  const reused=await verify({sharedCache,officeIds:['innovation','prince'],surface:{prince:{walking:1200}}});
+  const returnRoute={surface:{walking:1200}};
+  const initial=await verify({sharedCache,surface:{innovation:{walking:1200}},returnRoute});
+  const reused=await verify({sharedCache,officeIds:['innovation','prince'],surface:{prince:{walking:1200}},returnRoute});
   assert.deepEqual(reused.calls,['prince:walking','prince:bicycling']);
   assert.deepEqual(reused.events.filter(e=>e.type==='stage').map(e=>e.officeId),['prince']);
   assert.equal(reused.results[0].reused,true);
@@ -301,10 +331,10 @@ test('an unavailable station-pair result never reuses home-to-office rail fields
 
 for(const [mode,duration] of [['walking',1800],['bicycling',1200]]){
   test(`${mode} meets its inclusive threshold: neither metro stage is requested`,async()=>{
-    const {calls,work,events,results:[result]}=await verify({surface:{innovation:{[mode]:duration}}});
+    const {calls,work,events,results:[result]}=await verify({surface:{innovation:{[mode]:duration}},returnRoute:{surface:{[mode]:duration}}});
     assert.deepEqual(calls,['innovation:walking','innovation:bicycling']);
     assert.ok(!work.includes('local-model'));
-    assert.equal(result.checked,2);
+    assert.equal(result.checked,4);
     assert.ok(result.plans.some(p=>p.mode===mode&&p.qualified));
     assert.ok(events.filter(e=>e.type==='plan').every(e=>e.plan.mode!=='metro'));
     assert.deepEqual(events.filter(e=>e.type==='stage').map(e=>[e.officeId,e.stage]),[['innovation','surface']]);
@@ -312,9 +342,9 @@ for(const [mode,duration] of [['walking',1800],['bicycling',1200]]){
 }
 
 test('direct metro runs after both surface routes fail and skips segmented queries at 18 minutes',async()=>{
-  const {calls,work,events,results:[result]}=await verify({direct:{innovation:1109}});
+  const {calls,work,events,results:[result]}=await verify({direct:{innovation:1109},returnRoute:{full:1100}});
   assert.deepEqual(calls,['innovation:walking','innovation:bicycling','innovation:direct']);
-  assert.equal(result.checked,3);
+  assert.equal(result.checked,6);
   assert.ok(!work.includes('local-model'));
   assert.equal(result.plans.find(p=>p.qualified)?.metroMethod,'full');
   assert.deepEqual(events.filter(e=>e.type==='stage').map(e=>e.stage),['surface','metro-full']);
@@ -446,9 +476,9 @@ test('direct metro errors remain visible while segmented verification can still 
 
 test('short-circuiting one office does not skip verification for another office',async()=>{
   const {calls,events,results}=await verify({officeIds:['innovation','prince'],
-    surface:{innovation:{walking:1000}},direct:{prince:1000}});
+    surface:{innovation:{walking:1000}},direct:{prince:1000},returnRoute:{surface:{walking:1700}}});
   assert.deepEqual(calls,['innovation:walking','innovation:bicycling','prince:walking','prince:bicycling','prince:direct']);
-  assert.deepEqual(results.map(r=>[r.officeId,r.checked]),[['innovation',2],['prince',3]]);
+  assert.deepEqual(results.map(r=>[r.officeId,r.checked]),[['innovation',4],['prince',5]]);
   assert.ok(results.every(r=>r.plans.some(p=>p.qualified)));
   assert.deepEqual(events.filter(e=>e.type==='stage').map(e=>[e.officeId,e.stage]),[['innovation','surface'],['prince','surface'],['prince','metro-full']]);
 });
@@ -574,4 +604,94 @@ test('a POI-based office rejects coordinate-only fixed walks even when their coo
   assert.deepEqual(calls,['innovation:walking','innovation:bicycling','innovation:direct']);
   assert.ok(!result.plans.some(plan=>plan.metroMethod==='segmented'));
   assert.ok(!result.plans.some(plan=>plan.qualified));
+});
+
+test('return-only cycling skips return metro and lets outbound continue',async()=>{
+  const sharedCache=new Map(),poiId='B0HOME0001';
+  const {calls,returnRequests,results:[result]}=await verify({sharedCache,poiId,access:1000,returnRoute:{surface:{bicycling:1180}}});
+  assert.ok(calls.includes('innovation:direct'));
+  assert.ok(calls.includes('access:walking'));
+  assert.deepEqual(returnRequests.map(r=>r.mode),['walking','bicycling']);
+  const plan=result.plans.find(p=>p.qualified);
+  assert.equal(plan.direction,'to-home');
+  assert.equal(plan.legs[0].from,offices[0].name);
+  assert.equal(plan.legs[0].to,'测试小区门口');
+  assert.equal(result.complete,true);
+  assert.equal(sharedCache.size,2);
+  const cached=await verify({sharedCache,poiId});
+  assert.equal(cached.results[0].reused,true);
+  assert.equal(cached.results[0].plans.find(p=>p.qualified).direction,'to-home');
+  assert.equal(cached.returnRequests.length,0);
+});
+
+test('a return surface timeout and an over-limit outbound trip leave eligibility unresolved',async()=>{
+  const {results:[result]}=await verify({access:1000,returnRoute:{surface:{walking:'error'}}});
+  assert.equal(result.complete,false);
+  assert.ok(result.errors.includes('返程查询超时'));
+  assert.ok(!result.plans.some(p=>p.qualified));
+});
+
+test('a cached outbound failure still allows a fresh return result without replacing the outbound cache',async()=>{
+  const sharedCache=new Map();
+  await verify({sharedCache,access:1000});
+  assert.equal(sharedCache.size,1);
+  const [key,saved]=[...sharedCache.entries()][0];
+  const {calls,results:[result]}=await verify({sharedCache,returnRoute:{surface:{bicycling:1190}}});
+  assert.deepEqual(calls,[]);
+  assert.equal(sharedCache.get(key),saved);
+  assert.equal(sharedCache.size,2);
+  assert.ok(result.plans.some(p=>p.qualified&&p.direction==='to-home'));
+});
+
+test('a qualifying cached outbound trip does not skip a fresh return segmented search',async()=>{
+  const sharedCache=new Map();
+  await verify({sharedCache,surface:{innovation:{walking:1200}}});
+  const {calls,results:[result]}=await verify({sharedCache,returnRoute:{full:1160,prepared:true,egress:130}});
+  assert.deepEqual(calls,[]);
+  assert.ok(result.plans.some(p=>p.qualified&&p.direction!=='to-home'));
+  assert.ok(result.plans.some(p=>p.qualified&&p.direction==='to-home'&&p.metroMethod==='segmented'));
+  assert.equal(result.complete,true);
+});
+
+test('outside the surface buffers both directions start at metro without reusing surface cache entries',async()=>{
+  const sharedCache=new Map();
+  const surface={innovation:{walking:1200}};
+  await verify({sharedCache,surface,returnRoute:{surface:{walking:1200}}});
+  const geometry={type:'Polygon',coordinates:[[[114,22.5],[114.01,22.5],[114.01,22.51],[114,22.51],[114,22.5]]]};
+  const coverage={metadata:{complete:true,durationRounding:commute.DURATION_ROUNDING_VERSION},
+    features:['walking','bicycling'].map(mode=>({geometry,properties:{officeId:'innovation',mode}}))};
+  const {calls,returnRequests,events,results:[result]}=await verify({
+    sharedCache,surface,coverage,direct:{innovation:1080},returnRoute:{full:1080},
+  });
+  assert.deepEqual(calls,['innovation:direct']);
+  assert.deepEqual(returnRequests.map(r=>r.mode),['metro-full']);
+  assert.deepEqual(events.filter(e=>e.type==='stage').map(e=>e.stage),['metro-full']);
+  assert.equal(events.find(e=>e.type==='office-start').stage,'metro-full');
+  assert.ok(result.plans.every(p=>p.metroMethod==='full'&&p.qualified));
+});
+
+test('a borderline return full trip drills down using ordered rail and home-side egress',async()=>{
+  const {work,stationRequests,returnRequests,results:[result]}=await verify({access:900,poiId:'B0HOME0001',
+    returnRoute:{full:1160,egress:130,recommendation:{entry:recommendation().exit,exit:{...recommendation().entry,name:'南油地铁站0-0口',location:point}}}});
+  const plan=result.plans.find(p=>p.metroMethod==='segmented'&&p.qualified);
+  assert.equal(plan.direction,'to-home');
+  assert.equal(plan.duration,960);
+  assert.deepEqual(plan.legs.map(l=>[l.from,l.to]),[
+    ['创新工区','粤海门E口'],['粤海门站','南油站'],['南油地铁站0-0口','测试小区门口'],
+  ]);
+  assert.equal(stationRequests[0].origin.name,'粤海门');
+  assert.equal(stationRequests[0].destination.name,'南油');
+  const egress=returnRequests.find(r=>r.from==='南油地铁站0-0口');
+  assert.equal(egress.options.destinationPoiId,'B0HOME0001');
+  assert.ok(work.filter(call=>call==='access:walking').length<2);
+});
+
+test('return fallback ranks gate-to-home and keeps its independent station proof',async()=>{
+  const {work,returnRequests,results:[result]}=await verify({access:900,returnRoute:{prepared:true,egress:130}});
+  assert.ok(work.includes('return-model'));
+  assert.ok(returnRequests.some(r=>r.from.startsWith('南油地铁站')&&r.to==='测试小区门口'));
+  const plan=result.plans.find(p=>p.qualified);
+  assert.equal(plan.direction,'to-home');
+  assert.equal(plan.legs[1].from,'粤海门站');
+  assert.equal(plan.legs[1].to,'南油站');
 });

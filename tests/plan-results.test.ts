@@ -18,6 +18,13 @@ test('qualified segmented results replace unnecessary over-limit detours',()=>{
   assert.deepEqual(result.map(p=>p.id),['更快','可达']);
 });
 
+test('an outbound qualifying route still leaves the best measured return option available',()=>{
+  const result=visiblePlans([plan('去程',17,'segmented'),
+    {...plan('返程',23,'segmented'),direction:'to-home'},
+    {...plan('返程绕路',28,'segmented'),direction:'to-home'}]);
+  assert.deepEqual(result.map(p=>p.id),['去程','返程']);
+});
+
 test('distinct surface and full metro options remain available and sorted',()=>{
   const surface=plan('骑行',27),direct=plan('完整方案',23,'full'),short=plan('水湾',24,'segmented'),long=plan('湾厦',31,'segmented');
   assert.deepEqual(visiblePlans([surface,long,direct,short]).map(p=>p.id),['完整方案','水湾','骑行']);

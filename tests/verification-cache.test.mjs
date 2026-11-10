@@ -75,3 +75,19 @@ test('a newer completed verification replaces the result; older or failed reques
     assert.equal(db.prepare('SELECT count(*) AS count FROM api_cache').get().count,1);
   }finally{db.close();}
 });
+
+test('a return result masks only the final residence label and keeps the office as origin',async()=>{
+  const {db,cache}=await harness();
+  try {
+    const key=cache.verificationCacheKey('innovation',point,'B0HOME0001','v1-return');
+    const saved=result();
+    Object.assign(saved.plans[0],{direction:'to-home',legs:[
+      {from:'深圳湾 T2',to:'科苑 C 口'},{from:'南油 B 口',to:'访客自定义地点'},
+    ]});
+    await cache.writeSharedVerification(key,saved,start);
+    assert.ok(!db.prepare('SELECT payload FROM api_cache WHERE key=?').get(key).payload.includes('访客自定义地点'));
+    const reused=await cache.readSharedVerification(key,'当前地点');
+    assert.equal(reused.plans[0].legs[0].from,'深圳湾 T2');
+    assert.equal(reused.plans[0].legs.at(-1).to,'当前地点');
+  }finally{db.close();}
+});

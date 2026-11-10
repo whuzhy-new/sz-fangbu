@@ -202,6 +202,9 @@ input, select { min-width: 0; }
 .coverage-result.compact .result-status { padding: 0 8px; }
 .result-status.pass > svg { animation: check-enter 200ms var(--ease-out) both; }
 .route-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.over-limit-toggle { display: flex; align-items: center; justify-content: space-between; width: 100%; min-height: 44px; padding: 0 8px; border-radius: 10px; color: var(--muted); font-size: 13px; text-align: left; }
+.over-limit-toggle:hover, .over-limit-toggle[aria-expanded="true"] { background: var(--soft); }
+.over-limit-toggle > svg { transition: transform 240ms var(--ease-out); }
 .route-card { min-width: 0; border: 0; border-radius: 12px; overflow-anchor: none; background: transparent; transition: background-color 180ms ease; animation: plan-enter 300ms var(--ease-out) backwards; }
 .route-card:nth-child(2) { animation-delay: 35ms; }
 .route-card:nth-child(3) { animation-delay: 70ms; }

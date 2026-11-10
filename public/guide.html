@@ -372,8 +372,8 @@ SOFTWARE.
           <p>步行或骑行达标即停止。<br>地铁为 19～20 分钟时，继续比较分段方案。</p>
           <ol class="query-order">
             <li><div><strong>步行、普通自行车</strong>全程步行 ≤30 分钟，或骑行 ≤20 分钟。</div></li>
-            <li><div><strong>地铁完整方案</strong>直接查询住处到工区，总时长 ≤20 分钟。</div></li>
-            <li><div><strong>地铁分段方案</strong>前两步未达标，或完整地铁为 19～20 分钟时，继续查分段。</div></li>
+            <li><div><strong>地铁完整方案</strong>查询住处和工区之间的完整路线，总时长 ≤20 分钟。</div></li>
+            <li><div><strong>地铁分段方案</strong>去程和返程各自判断。某个方向前两步未达标，或完整地铁为 19～20 分钟时，继续查该方向的分段。</div></li>
           </ol>
           <div class="sum-panel">
             <p class="sum-heading">示例：世界花园海华居 → 深圳湾 T2</p>
@@ -385,7 +385,7 @@ SOFTWARE.
             </div>
           </div>
           <div class="status-grid">
-            <div><h3 class="status-good">符合房补条件</h3><p>已找到符合时限的路线，<br>下一步到高德核对。</p></div>
+            <div><h3 class="status-good">符合房补条件</h3><p>住宅到工区、工区到住宅，任一方向达标即可。</p></div>
             <div><h3>未完成／查询超时</h3><p>可点「重新核验」，<br>不能当作不符合。</p></div>
           </div>
           <details class="accordion"><summary>时长怎么取整？<svg aria-hidden="true"><use href="#i-chevron"/></svg></summary><div class="details-body"><p>直达方案取整总时长；分段方案先逐段取整，再相加。</p><p>余秒少于 30 秒舍去，达到 30 秒进 1 分钟，每段至少 1 分钟。例如 18 分 29 秒记 18 分，18 分 30 秒记 19 分。</p><p>分段计入<b>站内换乘</b>，不另加首末站的站内步行或候车。具体数值见「数据与计算口径」。</p></div></details>

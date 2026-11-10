@@ -1,5 +1,5 @@
 "use client";
-import {useState} from "react";
+import {useId,useState,type ReactNode} from "react";
 import {ArrowRight,Check,ChevronDown,CircleHelp,ExternalLink,Info,LoaderCircle} from "lucide-react";
 import {formatDuration,QUERY_STAGE_LABEL,roundDuration,type Plan,type QueryStage,type Verification} from "@/lib/commute";
 import ModeIcon from "./mode-icon";
@@ -7,6 +7,20 @@ import AnimatedCollapse from "./animated-collapse";
 import RouteReviewDialog from "./route-review-dialog";
 
 const date=(value:string)=>new Intl.DateTimeFormat("zh-CN",{month:"numeric",day:"numeric",timeZone:"Asia/Shanghai"}).format(new Date(value));
+
+function OverLimitPlans({defaultOpen,children}:{defaultOpen:boolean;children:ReactNode}) {
+  const [override,setOverride]=useState<boolean|null>(null);
+  const open=override??defaultOpen;
+  const id=useId();
+  return <div>
+    <button type="button" className="over-limit-toggle" aria-expanded={open} aria-controls={id} onClick={()=>setOverride(!open)}>
+      未达标方案<ChevronDown size={16} className={open?"rotated":""} aria-hidden="true"/>
+    </button>
+    <AnimatedCollapse open={open} id={id}>
+      <div className="route-list">{children}</div>
+    </AnimatedCollapse>
+  </div>;
+}
 
 function RouteSource({plan,onReview}:{plan:Plan;onReview:()=>void}) {
   const [open,setOpen]=useState(false);
@@ -33,6 +47,47 @@ export default function RouteResults({result,plans,selectedPlan,loading,querySta
   const best=plans.find(p=>p.qualified);
   const comparing=loading&&best?.mode==="metro"&&queryStage==="metro-segmented";
   const status=best?(comparing?"已达标，继续比较分段方案":"符合房补条件"):loading?`正在查询${QUERY_STAGE_LABEL[queryStage]}方案`:stopped?"核验已停止":error||result?.errors.length||!plans.length?"暂未完成核验":!result?.complete?"暂未确认房补条件":"已查方案超出时限";
+  const overLimit=plans.filter(plan=>!plan.qualified);
+  const renderPlan=(plan:Plan)=>{
+    const expandable=plan.mode==="metro";
+    const selected=selectedPlan?.id===plan.id;
+    const open=expandable&&selected;
+    const detailsId=`route-${plan.id}`;
+    const displayedDuration=roundDuration(plan.duration);
+    const direction=plan.direction==="to-home"?"工区 → 住宅":"住宅 → 工区";
+    const showCalculationNote=plan.metroMethod==="segmented"&&plan.source==="amap"&&displayedDuration>=18*60&&displayedDuration<=20*60;
+    return <article className={`route-card ${open?"active":""} ${!plan.qualified?"is-over-limit":""}`} key={plan.id}>
+      <div className={`route-card-heading ${!expandable?"surface-route":""}`}>
+      <button className="route-card-main" aria-expanded={expandable?open:undefined} aria-controls={expandable?detailsId:undefined} aria-pressed={!expandable?selected:undefined} onClick={()=>onSelect(plan)}>
+        <span className={`mode-badge ${plan.mode}`}><ModeIcon mode={plan.mode}/></span>
+        <span className="route-card-title"><strong>{plan.title}</strong><small>{direction}{!plan.qualified&&` · 超出 ${formatDuration(plan.duration-plan.limit)}`}</small></span>
+        <span className="route-card-time"><strong>{formatDuration(plan.duration)}</strong>{plan.qualified&&<Check size={14} aria-label="符合房补条件"/>}</span>
+        {expandable&&<ChevronDown size={16} className={open?"rotated":""} aria-hidden="true"/>}
+      </button>
+      {!expandable&&<button className="route-review-icon" aria-label={`上高德看路线：${plan.title}`} title="上高德看路线" aria-haspopup="dialog" aria-controls="route-review-dialog" onClick={()=>setReviewPlan(plan)}><ExternalLink size={17} aria-hidden="true"/></button>}
+      </div>
+      {expandable&&<AnimatedCollapse open={open} id={detailsId}>
+      <div className="route-details">
+        <ol className="route-timeline">
+          {plan.legs.map((leg,index)=>{
+            return <li className="timeline-leg" key={index}>
+              <span className={`timeline-node ${leg.mode}`}><ModeIcon mode={leg.mode} size={15}/></span>
+              <div className="timeline-content">
+                <div className="leg-meta"><span>{leg.label}</span><b>{formatDuration(leg.duration)}</b></div>
+                <p className="leg-endpoints"><span>{leg.from}</span><ArrowRight size={12} aria-hidden="true"/><span>{leg.to}</span></p>
+              </div>
+            </li>;
+          })}
+        </ol>
+        {plan.legs.length>1&&<div className="calculation">
+          <div className="calculation-sum" aria-label="分段时长相加">{plan.legs.map(l=>formatDuration(l.duration)).join(" + ")}<span>= {formatDuration(plan.duration)}</span></div>
+          {showCalculationNote&&<p className="calculation-note"><Info size={13} aria-hidden="true"/><span>高德 API 和 App 的用时可能不同。地铁按 9:00 查询，可在 App 将出发时间设为 9:00 再核对。接驳段也可换成步行或自行车，看看是否更快。</span></p>}
+        </div>}
+        <RouteSource plan={plan} onReview={()=>setReviewPlan(plan)}/>
+      </div>
+      </AnimatedCollapse>}
+    </article>;
+  };
   return <section className="results-section" aria-label="地点核验结果">
     <div className={`result-status ${best?"pass":""}`} role="status" aria-live="polite">
       {best?<Check size={21} aria-hidden="true"/>:loading?<LoaderCircle size={20} className="spin" aria-hidden="true"/>:<CircleHelp size={20} aria-hidden="true"/>}
@@ -43,45 +98,8 @@ export default function RouteResults({result,plans,selectedPlan,loading,querySta
     {!best&&result?.localSearch&&<p className="local-search-summary">本地已比较 {result.localSearch.total} 个组合{result.localSearch.bestDuration!==null&&<> · 估算最短 {formatDuration(result.localSearch.bestDuration)}</>}</p>}
     {error&&<p className="query-error" role="alert">{error}</p>}
     <div className="route-list">
-      {plans.map(plan=>{
-        const expandable=plan.mode==="metro";
-        const selected=selectedPlan?.id===plan.id;
-        const open=expandable&&selected;
-        const detailsId=`route-${plan.id}`;
-        const displayedDuration=roundDuration(plan.duration);
-        const showCalculationNote=plan.metroMethod==="segmented"&&plan.source==="amap"&&displayedDuration>=18*60&&displayedDuration<=20*60;
-        return <article className={`route-card ${open?"active":""} ${!plan.qualified?"is-over-limit":""}`} key={plan.id}>
-          <div className={`route-card-heading ${!expandable?"surface-route":""}`}>
-          <button className="route-card-main" aria-expanded={expandable?open:undefined} aria-controls={expandable?detailsId:undefined} aria-pressed={!expandable?selected:undefined} onClick={()=>onSelect(plan)}>
-            <span className={`mode-badge ${plan.mode}`}><ModeIcon mode={plan.mode}/></span>
-            <span className="route-card-title"><strong>{plan.title}</strong>{!plan.qualified&&<small>超出 {formatDuration(plan.duration-plan.limit)}</small>}</span>
-            <span className="route-card-time"><strong>{formatDuration(plan.duration)}</strong>{plan.qualified&&<Check size={14} aria-label="符合房补条件"/>}</span>
-            {expandable&&<ChevronDown size={16} className={open?"rotated":""} aria-hidden="true"/>}
-          </button>
-          {!expandable&&<button className="route-review-icon" aria-label={`上高德看路线：${plan.title}`} title="上高德看路线" aria-haspopup="dialog" aria-controls="route-review-dialog" onClick={()=>setReviewPlan(plan)}><ExternalLink size={17} aria-hidden="true"/></button>}
-          </div>
-          {expandable&&<AnimatedCollapse open={open} id={detailsId}>
-          <div className="route-details">
-            <ol className="route-timeline">
-              {plan.legs.map((leg,index)=>{
-                return <li className="timeline-leg" key={index}>
-                  <span className={`timeline-node ${leg.mode}`}><ModeIcon mode={leg.mode} size={15}/></span>
-                  <div className="timeline-content">
-                    <div className="leg-meta"><span>{leg.label}</span><b>{formatDuration(leg.duration)}</b></div>
-                    <p className="leg-endpoints"><span>{leg.from}</span><ArrowRight size={12} aria-hidden="true"/><span>{leg.to}</span></p>
-                  </div>
-                </li>;
-              })}
-            </ol>
-            {plan.legs.length>1&&<div className="calculation">
-              <div className="calculation-sum" aria-label="分段时长相加">{plan.legs.map(l=>formatDuration(l.duration)).join(" + ")}<span>= {formatDuration(plan.duration)}</span></div>
-              {showCalculationNote&&<p className="calculation-note"><Info size={13} aria-hidden="true"/><span>高德 API 和 App 的用时可能不同。地铁按 9:00 查询，可在 App 将出发时间设为 9:00 再核对。接驳段也可换成步行或自行车，看看是否更快。</span></p>}
-            </div>}
-            <RouteSource plan={plan} onReview={()=>setReviewPlan(plan)}/>
-          </div>
-          </AnimatedCollapse>}
-        </article>;
-      })}
+      {plans.filter(plan=>plan.qualified).map(renderPlan)}
+      {overLimit.length>0&&<OverLimitPlans defaultOpen={!best}>{overLimit.map(renderPlan)}</OverLimitPlans>}
     </div>
     {result?.errors.map((message,index)=><p className="result-note" key={index}>{message}</p>)}
     <RouteReviewDialog plan={reviewPlan} onClose={()=>setReviewPlan(null)}/>

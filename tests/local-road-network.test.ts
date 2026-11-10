@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {allAccessTimes,nearestNodes,projectLocation,type RoadNetwork} from '../lib/local-road-network.ts';
+import {allAccessTimes,nearestNodes,projectLocation,reverseRoadGraph,type RoadNetwork} from '../lib/local-road-network.ts';
 import type {Coord} from '../lib/commute.ts';
 
 const locations:Coord[]=[[113.9,22.53],[113.904,22.53],[113.908,22.53]];
@@ -36,6 +36,14 @@ test('points off the road network remain unknown instead of using straight-line 
   const network=fixture(),point:Coord=[113.95,22.6];
   assert.equal(nearestNodes(network,point,'walking').length,0);
   assert.deepEqual(allAccessTimes(network,point,locations),locations.map(()=>({walking:null,bicycling:null})));
+});
+
+test('return ranking searches incoming edges from home without changing forward edges',()=>{
+  const network=fixture();
+  const reversed={...network,bicycling:reverseRoadGraph(network.bicycling)};
+  const times=allAccessTimes(reversed,locations[0],locations);
+  assert.ok(times.every((time,index)=>time.bicycling!==null&&Math.abs(time.bicycling-48*index)<.001));
+  assert.equal(allAccessTimes(network,locations[0],[locations[2]])[0].bicycling,null);
 });
 
 test('the search limit excludes inaccessible targets without inventing durations',()=>{

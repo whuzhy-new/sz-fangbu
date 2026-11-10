@@ -22,9 +22,10 @@ class Network:
     def snaps(self,gcj,mode,k=4):
         dist,idx=self.trees[mode].query(self.point(gcj),k=k)
         return np.atleast_1d(dist),self.ids[mode][np.atleast_1d(idx)]
-    def field(self,targets,mode,limit=7200,edge_scale=1):
+    def field(self,targets,mode,limit=7200,edge_scale=1,to_home=False):
         speed=1.25 if mode=='walking' else 10.755532740416204/3.6
-        graph=(self.graphs[mode].T*edge_scale).tocsr();n=graph.shape[0]
+        roads=self.graphs[mode]
+        graph=((roads if to_home else roads.T)*edge_scale).tocsr();n=graph.shape[0]
         seeds={}
         for location,initial in targets:
             distances,ids=self.snaps(location,mode)
