@@ -31,7 +31,8 @@ export default function RouteResults({result,plans,selectedPlan,loading,querySta
 }) {
   const [reviewPlan,setReviewPlan]=useState<Plan|null>(null);
   const best=plans.find(p=>p.qualified);
-  const status=best?"符合房补条件":loading?`正在查询${QUERY_STAGE_LABEL[queryStage]}方案`:stopped?"核验已停止":error||result?.errors.length||!plans.length?"暂未完成核验":!result?.complete?"暂未确认房补条件":"已查方案超出时限";
+  const comparing=loading&&best?.mode==="metro"&&queryStage==="metro-segmented";
+  const status=best?(comparing?"已达标，继续比较分段方案":"符合房补条件"):loading?`正在查询${QUERY_STAGE_LABEL[queryStage]}方案`:stopped?"核验已停止":error||result?.errors.length||!plans.length?"暂未完成核验":!result?.complete?"暂未确认房补条件":"已查方案超出时限";
   return <section className="results-section" aria-label="地点核验结果">
     <div className={`result-status ${best?"pass":""}`} role="status" aria-live="polite">
       {best?<Check size={21} aria-hidden="true"/>:loading?<LoaderCircle size={20} className="spin" aria-hidden="true"/>:<CircleHelp size={20} aria-hidden="true"/>}

@@ -16,7 +16,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN" data-app-release="shared-verification-v1">
+    <html lang="zh-CN" data-app-release="metro-drill-v1">
       <body className="antialiased">{children}</body>
     </html>
   );

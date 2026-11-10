@@ -9,7 +9,7 @@ import ModeIcon from "./mode-icon";
 import {PREFERENCES_KEY,SAVED_PLACES_KEY,placeKey,readPreferences,readSavedPlaces,rememberPlace,toggleFavorite} from "@/lib/commute-storage";
 import {assessMapPick} from "@/lib/coverage";
 import {visiblePlans} from "@/lib/plan-results";
-import {amapPoiId,placePoiId,LIMITS,MODE_LABEL,QUERY_STAGE_LABEL,ROUND_UP_SECONDS,withinShenzhen,type Coord,type Mode,type Office,type Place,type Plan,type QueryStage,type Verification} from "@/lib/commute";
+import {amapPoiId,placePoiId,LIMITS,METRO_DRILL_DOWN_FROM,MODE_LABEL,QUERY_STAGE_LABEL,ROUND_UP_SECONDS,withinShenzhen,type Coord,type Mode,type Office,type Place,type Plan,type QueryStage,type Verification} from "@/lib/commute";
 import type {Coverage,RailData} from "@/lib/map-types";
 
 const modes:Mode[]=["walking","bicycling","metro"];
@@ -317,7 +317,7 @@ export default function CommuteApp() {
       <div className="tool-limits">{modes.map(mode=><div className={mode} key={mode}><span><ModeIcon mode={mode} size={14}/>{mode==="walking"?"步行":mode==="bicycling"?"自行车":"地铁"}</span><strong>{LIMITS[mode]/60}<small>分内</small></strong></div>)}</div>
       <ul className="tool-rule-list">
         <li><MapPin size={15} aria-hidden="true"/><div><h3>起终点</h3><p>小区门口 → 办公地点</p></div></li>
-        <li><ListOrdered size={15} aria-hidden="true"/><div><h3>查询顺序</h3><p>步行／骑行 → 完整地铁 → 分段地铁</p><p>满足时限即停止查询</p></div></li>
+        <li><ListOrdered size={15} aria-hidden="true"/><div><h3>查询顺序</h3><p>步行／骑行 → 完整地铁 → 分段地铁</p><p>步行或骑行达标即停止</p><p>地铁 {METRO_DRILL_DOWN_FROM/60}～{LIMITS.metro/60} 分仍会继续比较</p></div></li>
         <li><TrainFront size={15} aria-hidden="true"/><div><h3>完整地铁</h3><p>取高德完整路线的总时长</p></div></li>
         <li><Route size={15} aria-hidden="true"/><div><h3>分段地铁</h3><p>进站接驳＋地铁＋出站接驳</p><p>接驳可步行或骑行</p><p>地铁段只计乘车和站内换乘</p></div></li>
         <li><Timer size={15} aria-hidden="true"/><div><h3>时长取整</h3><p>满 {ROUND_UP_SECONDS} 秒进 1 分，不足则舍去</p><p>每段至少 1 分，先取整再相加</p></div></li>

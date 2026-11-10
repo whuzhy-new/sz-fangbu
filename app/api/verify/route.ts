@@ -7,7 +7,7 @@ import {surfaceLeg,fullMetro,stationMetro,METRO_DEPARTURE,MapApiError} from "@/l
 import type {RecommendedMetro} from "@/lib/full-metro";
 import {hasGateNumber,recommendedStreetGates} from "@/lib/metro-gates";
 import {readSharedVerification,verificationCacheKey,writeSharedVerification} from "@/lib/verification-cache";
-import {DURATION_ROUNDING_VERSION,LIMITS,amapPoiId,distanceMeters,qualified,roundLeg,sumLegDurations,withinShenzhen,type Coord,type Leg,type Plan,type QueryStage,type Verification} from "@/lib/commute";
+import {DURATION_ROUNDING_VERSION,LIMITS,METRO_DRILL_DOWN_FROM,amapPoiId,distanceMeters,qualified,roundLeg,sumLegDurations,withinShenzhen,type Coord,type Leg,type Plan,type QueryStage,type Verification} from "@/lib/commute";
 
 type Prepared={id:string;stationId:string;stationName:string;officeId:string;duration:number;legs:Leg[];measuredAt:string;originalTotalDuration?:number|null;metroApi?:{originName:string;destinationName:string};originalReferenceScope?:string};
 type Entry={id:string;name:string;location:Coord;source:string};
@@ -69,7 +69,7 @@ export async function POST(request:Request) {
           if(stopped())break;
           const startedAt=Date.now();
           const key=verificationCacheKey(office.id,input.location,originPoiId,JSON.stringify([office.name,office.entrance,office.poiId,
-            "walkingIdentity" in office?office.walkingIdentity:null,DURATION_ROUNDING_VERSION,LIMITS,METRO_DEPARTURE.label,prepared.methodVersion,prepared.generatedAt,preparedReady]));
+            "walkingIdentity" in office?office.walkingIdentity:null,DURATION_ROUNDING_VERSION,LIMITS,METRO_DRILL_DOWN_FROM,METRO_DEPARTURE.label,prepared.methodVersion,prepared.generatedAt,preparedReady]));
           const cached=await readSharedVerification(key,input.name);
           if(stopped())break;
           if(cached&&!refresh){send({type:"office-result",result:cached});continue;}
@@ -89,7 +89,8 @@ export async function POST(request:Request) {
             }catch(error){result.complete=false;result.errors.push(error instanceof MapApiError?error.message:"路线暂未完成查询。");}
           }));
           const surfaceQualified=result.plans.some(p=>p.qualified);
-          let fullMetroQualified=false;
+          const bestMetroDuration=()=>Math.min(...result.plans.filter(p=>p.mode==="metro"&&p.qualified).map(p=>p.duration));
+          const hasShortMetro=()=>bestMetroDuration()<METRO_DRILL_DOWN_FROM;
           let recommendation:RecommendedMetro|undefined;
           if(!surfaceQualified&&!stopped()&&!apiSignal.aborted)try{
             stage("metro-full");result.checked++;
@@ -97,12 +98,12 @@ export async function POST(request:Request) {
             if(raw){
               const {recommendedMetro,...rawLeg}=raw;
               recommendation=recommendedMetro;
-              const leg=roundLeg(rawLeg);fullMetroQualified=qualified(leg.duration,"metro");
-              const plan:Plan={id:`${office.id}-metro-full`,officeId:office.id,mode:"metro",metroMethod:"full",title:"地铁完整方案",duration:leg.duration,limit:1200,qualified:fullMetroQualified,legs:[leg],measuredAt:leg.measuredAt!,source:"amap",note:`高德总时长，含步行、换乘及接口计入的候车。查询时刻：${METRO_DEPARTURE.label}。`};
+              const leg=roundLeg(rawLeg);
+              const plan:Plan={id:`${office.id}-metro-full`,officeId:office.id,mode:"metro",metroMethod:"full",title:"地铁完整方案",duration:leg.duration,limit:LIMITS.metro,qualified:qualified(leg.duration,"metro"),legs:[leg],measuredAt:leg.measuredAt!,source:"amap",note:`高德总时长，含步行、换乘及接口计入的候车。查询时刻：${METRO_DEPARTURE.label}。`};
               result.plans.push(plan);send({type:"plan",plan});
             }
           }catch(error){result.complete=false;result.errors.push(error instanceof MapApiError?error.message:"完整地铁方案暂未完成查询。");}
-          if(!surfaceQualified&&!fullMetroQualified&&!stopped()&&!apiSignal.aborted) {
+          if(!surfaceQualified&&!hasShortMetro()&&!stopped()&&!apiSignal.aborted) {
             stage("metro-segmented");
             // Prioritize the full journey's stations and explicit street gates.
             // Generic gate hints must resolve to real, numbered exits first.
@@ -150,7 +151,7 @@ export async function POST(request:Request) {
                     if(existing>=0)result.plans[existing]=plan;else result.plans.push(plan);
                     send({type:"plan",plan,originalTotalDuration:stationProof!.originalTotalDuration,originalReferenceScope:"stations"});
                   }
-                  return plan.qualified;
+                  return hasShortMetro();
                 };
                 // Check walking at both ends first. If it fails, compare cycling
                 // at both ends as well, retaining every successful combination.
@@ -168,7 +169,7 @@ export async function POST(request:Request) {
                 }
               }
             }
-            if(!result.plans.some(p=>p.qualified)&&continueAccess&&!stopped()&&!apiSignal.aborted){
+            if(!hasShortMetro()&&continueAccess&&!stopped()&&!apiSignal.aborted){
               const {candidatesByOffice,targets,targetIndices}=access??=prepareAccess();
               const candidates=candidatesByOffice.get(office.id)!;
               local??=localAccessTimes(input.location,targets,request.url);
@@ -184,6 +185,8 @@ export async function POST(request:Request) {
               if(!measured&&!apiSignal.aborted){result.complete=false;result.errors.push("本地路网暂不可用，已保留高德结果。");}
               for(const {candidate,mode} of ranked.proofs) {
                 if(stopped()||apiSignal.aborted)break;
+                // Access counts for at least one minute, even at the entrance.
+                if(candidate.plan.duration+60>=bestMetroDuration())continue;
                 try{
                   const raw=await querySurface(mode,input.location,candidate.entry.location,input.name,candidate.entry.name,originPoiId,candidate.entry.id);
                   if(!raw)continue;
@@ -206,7 +209,7 @@ export async function POST(request:Request) {
                     if(existing>=0)result.plans[existing]=plan;else result.plans.push(plan);
                     send({type:"plan",plan,preparedPlanId:candidate.plan.id,originalTotalDuration:candidate.plan.originalTotalDuration,originalReferenceScope:candidate.plan.originalReferenceScope});
                   }
-                  if(plan.qualified)break;
+                  if(hasShortMetro())break;
                 }catch(error){
                   accessError(error);
                   if(!continueAccess)break;
@@ -218,7 +221,10 @@ export async function POST(request:Request) {
             // proof of ineligibility; the UI reports only the checked routes.
           }
           if(stopped())result.complete=false;
-          if(apiSignal.aborted&&!stopped()&&!result.plans.some(p=>p.qualified)){result.complete=false;result.errors.push("高德核验超时，已有结果已保留。");}
+          if(apiSignal.aborted&&!stopped()&&!surfaceQualified&&!hasShortMetro()){
+            result.complete=false;
+            result.errors.push(result.plans.some(p=>p.qualified)?"分段比较已到时限，已保留达标方案。":"高德核验超时，已有结果已保留。");
+          }
           result.errors=[...new Set(result.errors)];
           result.plans.sort((a,b)=>Number(b.qualified)-Number(a.qualified)||a.duration-b.duration);
           if(!stopped()&&cached&&(!result.complete||!result.plans.length)&&!result.plans.some(p=>p.qualified)){

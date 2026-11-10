@@ -20,7 +20,7 @@ const offices=[{id:'innovation',name:'创新工区',poiId:'B0OFFICE01',walkingId
 const leg=(mode,duration,origin,destination,from,to)=>({mode,duration,origin,destination,from,to,
   label:mode,distance:100,paths:[],source:'amap',measuredAt});
 
-async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,unnamedAccess=false,elapsedPerCall=0,recommendedMetro,recommendedTail=150,stationDuration=750,stationLegs,sharedCache,refresh=false}={}){
+async function verify({surface={},direct={},access=200,fixed=[720,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,unnamedAccess=false,elapsedPerCall=0,recommendedMetro,recommendedTail=150,stationDuration=720,stationLegs,sharedCache,refresh=false}={}){
   const calls=[],work=[],requests=[],stationRequests=[];
   let elapsed=0,budget,accessIndex=0;
   const deadline=deadlineController??new AbortController();
@@ -148,8 +148,8 @@ test('the complete journey gates are proved before loading or ranking the local 
   assert.ok(!work.includes('local-model'));
   const plan=result.plans.find(p=>p.id==='innovation-metro-recommended');
   assert.ok(plan.qualified);
-  assert.equal(plan.duration,1140);
-  assert.deepEqual(plan.legs.map(l=>l.duration),[180,780,180]);
+  assert.equal(plan.duration,1080);
+  assert.deepEqual(plan.legs.map(l=>l.duration),[180,720,180]);
   assert.equal(requests[2].to,rec.entry.name);
   assert.equal(requests[2].options.destinationPoiId,'B0ENTRY01');
   assert.equal(requests[3].from,rec.exit.name);
@@ -167,7 +167,7 @@ test('recommended gates compare mixed walking/cycling at both ends before trying
   const plan=result.plans.find(p=>p.id==='innovation-metro-recommended');
   assert.ok(plan.qualified);
   assert.deepEqual(plan.legs.map(l=>l.mode),['bicycling','metro','walking']);
-  assert.equal(plan.duration,1140);
+  assert.equal(plan.duration,1080);
 });
 
 test('recommended egress uses the exact API gate even when the prepared best tail differs',async()=>{
@@ -266,8 +266,8 @@ for(const [mode,duration] of [['walking',1800],['bicycling',1200]]){
   });
 }
 
-test('direct metro runs after both surface routes fail and skips segmented queries at 20 minutes',async()=>{
-  const {calls,work,events,results:[result]}=await verify({direct:{innovation:1200}});
+test('direct metro runs after both surface routes fail and skips segmented queries at 18 minutes',async()=>{
+  const {calls,work,events,results:[result]}=await verify({direct:{innovation:1109}});
   assert.deepEqual(calls,['innovation:walking','innovation:bicycling','innovation:direct']);
   assert.equal(result.checked,3);
   assert.ok(!work.includes('local-model'));
@@ -275,12 +275,48 @@ test('direct metro runs after both surface routes fail and skips segmented queri
   assert.deepEqual(events.filter(e=>e.type==='stage').map(e=>e.stage),['surface','metro-full']);
 });
 
-test('segmented metro runs only after the direct total exceeds 20 minutes',async()=>{
+for(const rawDuration of [1110,1229]){
+  test(`complete metro at ${commute.roundDuration(rawDuration)/60} minutes stays qualified while segmentation searches for a shorter route`,async()=>{
+    const {events,results:[result]}=await verify({direct:{innovation:rawDuration}});
+    assert.deepEqual(events.filter(e=>e.type==='stage').map(e=>e.stage),['surface','metro-full','metro-segmented']);
+    const full=result.plans.find(p=>p.metroMethod==='full');
+    assert.ok(full.qualified);
+    assert.equal(full.duration,commute.roundDuration(rawDuration));
+    assert.equal(result.plans[0].metroMethod,'segmented');
+    assert.equal(result.plans[0].duration,1080);
+  });
+}
+
+test('recommended segmentation keeps looking after a 19-minute walking combination',async()=>{
+  const {events,work,results:[result]}=await verify({recommendedMetro:recommendation(),entryCount:2,stationDuration:750,access:[200,120]});
+  const measured=events.filter(e=>e.type==='plan'&&e.plan.id==='innovation-metro-recommended').map(e=>e.plan.duration);
+  assert.deepEqual(measured,[1140,1080]);
+  assert.ok(!work.includes('local-model'));
+  assert.equal(result.plans[0].duration,1080);
+});
+
+test('ranked segmentation continues after a 19-minute proof and stops at 18 minutes',async()=>{
+  const {calls,results:[result]}=await verify({fixed:[750,150],entryCount:3,access:[200,120]});
+  assert.equal(calls.filter(c=>c.startsWith('access:')).length,2);
+  assert.equal(result.plans[0].duration,1080);
+  assert.equal(result.plans[0].metroMethod,'segmented');
+});
+
+test('a timed-out comparison retains the qualifying metro plan without caching an unfinished comparison',async()=>{
+  const sharedCache=new Map();
+  const {results:[result]}=await verify({direct:{innovation:1200},localDeadline:true,sharedCache});
+  assert.ok(result.plans.some(p=>p.metroMethod==='full'&&p.qualified));
+  assert.equal(result.complete,false);
+  assert.match(result.errors.join(' '),/分段比较已到时限，已保留达标方案/);
+  assert.equal(sharedCache.size,0);
+});
+
+test('segmented metro also runs when the complete metro route exceeds 20 minutes',async()=>{
   const {calls,work,events,results:[result]}=await verify({direct:{innovation:1230}});
   assert.deepEqual(calls,['innovation:walking','innovation:bicycling','innovation:direct','access:walking']);
   assert.deepEqual(work,['innovation:walking','innovation:bicycling','innovation:direct','local-model','access:walking']);
   assert.ok(result.plans.some(p=>p.metroMethod==='full'&&!p.qualified));
-  assert.ok(result.plans.some(p=>p.metroMethod==='segmented'&&p.qualified&&p.duration===1140));
+  assert.ok(result.plans.some(p=>p.metroMethod==='segmented'&&p.qualified&&p.duration===1080));
   assert.deepEqual(events.filter(e=>e.type==='stage').map(e=>e.stage),['surface','metro-full','metro-segmented']);
   const metro=result.plans.find(p=>p.metroMethod==='segmented').legs.find(l=>l.mode==='metro');
   assert.equal(metro.originPoiId,'nanyou-0');
@@ -319,14 +355,11 @@ test('QR endpoints preserve the identity actually used in API requests',async()=
   assert.equal(access.destinationPoiId,'B0ENTRY00');
 });
 
-test('20 minutes 29 seconds rounds down and short-circuits later stages',async()=>{
+test('20 minutes 29 seconds rounds down and keeps the bicycling short-circuit',async()=>{
   const surface=await verify({surface:{innovation:{bicycling:1229}}});
   assert.deepEqual(surface.calls,['innovation:walking','innovation:bicycling']);
   const bike=surface.results[0].plans.find(p=>p.mode==='bicycling');
   assert.equal(bike.duration,1200);assert.equal(bike.legs[0].rawDuration,1229);
-  const direct=await verify({direct:{innovation:1229}});
-  assert.deepEqual(direct.calls,['innovation:walking','innovation:bicycling','innovation:direct']);
-  assert.equal(direct.results[0].plans.find(p=>p.qualified).duration,1200);
 });
 
 test('rounded fixed legs and access are added separately, including candidate filtering',async()=>{
