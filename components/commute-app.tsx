@@ -105,10 +105,10 @@ export default function CommuteApp() {
 
   useEffect(()=>{
     const media=window.matchMedia("(max-width: 700px)");
-    const update=()=>{setIsMobile(media.matches);setMobileOpen(!media.matches||needsOffice);};
+    const update=()=>setIsMobile(media.matches);
     update();media.addEventListener("change",update);
     return()=>media.removeEventListener("change",update);
-  },[needsOffice]);
+  },[]);
 
   const verify=useCallback(async(place:Place,ids:string[],resetResults=false)=>{
     if(!ids.length)return;
@@ -121,7 +121,7 @@ export default function CommuteApp() {
       return next;
     });
     if(resetResults||ids.includes(activeRef.current)){manualPlan.current=false;setSelectedPlan(null);}
-    setLoading(true);setQueryStage("surface");setQueryStopped(false);setError("");setMobileOpen(true);setActiveTool(null);setCurrentOffice(ids[0]);
+    setLoading(true);setQueryStage("surface");setQueryStopped(false);setError("");setMobileOpen(true);setCurrentOffice(ids[0]);
     try {
       const response=await fetch("/api/verify",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:place.location,name:place.name,poiId:placePoiId(place),officeIds:ids}),signal:controller.signal});
       if(!response.ok){const data=await response.json() as {error?:string};throw new Error(data.error??"路线查询失败，请重试。");}
@@ -218,7 +218,8 @@ export default function CommuteApp() {
   }
   function switchOffice(id:string){
     try {localStorage.setItem(OFFICE_SELECTED_KEY,"1");}catch {setStorageError("浏览器未能保存设置或地点。");}
-    if(isMobile&&needsOffice){setNeedsOffice(false);setActiveTool(null);setMobileOpen(false);}
+    if(isMobile&&needsOffice)setNeedsOffice(false);
+    setActiveTool("office");setMobileOpen(true);
     if(id===activeId)return;
     setActiveId(id);activeRef.current=id;manualPlan.current=false;
     setSelectedPlan(visiblePlans(results[id]?.plans).find(plan=>plan.qualified)??null);
@@ -250,7 +251,7 @@ export default function CommuteApp() {
   const officeField=(<fieldset className="office-section"><legend className="field-label">{isMobile&&needsOffice?"选择办公工区":"办公工区"}</legend>
             <div className="office-cards">
               {[...offices].sort((a,b)=>officeOrder.indexOf(a.id)-officeOrder.indexOf(b.id)).map(office=><label className="office-choice" key={office.id}>
-                <input type="radio" name="office" aria-label={office.name} checked={!(isMobile&&needsOffice)&&activeId===office.id} onChange={()=>{switchOffice(office.id);setActiveTool(null);}}/>
+                <input type="radio" name="office" aria-label={office.name} checked={!(isMobile&&needsOffice)&&activeId===office.id} onChange={()=>switchOffice(office.id)}/>
                 <span className="office-radio" aria-hidden="true"><span/></span><span className="office-choice-name">{officeNames[office.id]??office.name}</span>
               </label>)}
               {!offices.length&&<span className="office-placeholder" role="status">加载工区…</span>}
@@ -315,7 +316,7 @@ export default function CommuteApp() {
   }
   const hasBody=!!(expandedTool||showOptions||(showAnalysis&&home)||storageError||error||(loading&&!activeLoading));
   const queryHeader=(<div className="query-header">
-    <h1 className="search-panel-title">深圳房补地图</h1>
+    <h1 className="search-panel-title"><MapPin size={19} aria-hidden="true"/><span>深圳房补地图</span><span className="brand-badge">ByteDance</span></h1>
     <div className={isMobile?"mobile-panel-header":"search-section"}>
       <label className="sr-only" htmlFor="place-query">居住地点</label>
       {searchField}

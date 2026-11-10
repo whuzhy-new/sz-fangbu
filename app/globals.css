@@ -53,7 +53,9 @@ input, select { min-width: 0; }
 .text-button:hover { color: var(--ink); }
 
 .atlas-app { height: 100dvh; display: flex; flex-direction: column; }
-.search-panel-title { margin: 0 0 10px; font-size: 13px; font-weight: 550; line-height: 1.5; color: var(--ink); }
+.search-panel-title { display: flex; align-items: center; gap: 7px; margin: 0 0 12px; font-size: 18px; font-weight: 550; line-height: 1.4; color: var(--ink); }
+.search-panel-title > svg { color: var(--green); }
+.brand-badge { flex-shrink: 0; margin-left: 2px; padding: 3px 7px; border-radius: 4px; background: var(--ink); color: #fff; font-size: 10px; font-weight: 500; line-height: 1.5; letter-spacing: .01em; }
 .query-header { position: relative; z-index: 2; flex-shrink: 0; width: 100%; padding: var(--query-inset) var(--query-inset) 10px; border: 0; border-radius: var(--query-radius); background: var(--glass-raised); box-shadow: 0 5px 14px #193d2d0a; }
 .query-header .search-input { background: #f1f5f2; box-shadow: inset 0 0 0 1px #ffffffd9; }
 .query-header .search-input.focused { box-shadow: inset 0 1px 0 #ffffffd9, 0 0 0 2px #2f725d35; }
