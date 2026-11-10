@@ -126,6 +126,14 @@ export default function CommuteApp() {
       if(!response.ok){const data=await response.json() as {error?:string};throw new Error(data.error??"路线查询失败，请重试。");}
       if(!response.body)throw new Error("未取得路线结果，请重试。");
       const reader=response.body.getReader(),decoder=new TextDecoder();let pending="",finished=false;
+      const hydratePreparedPaths=(plan:Plan,preparedPlanId=plan.id)=>{
+        const base=Object.values(railRef.current?.plans[plan.officeId]??{}).find(candidate=>candidate.id===preparedPlanId);
+        if(!base)return plan;
+        return {...plan,legs:plan.legs.map((leg,index)=>{
+          const original=base.legs[index-1];
+          return original?.mode===leg.mode&&leg.paths.length===0?{...leg,paths:original.paths}:leg;
+        })};
+      };
       const handle=(event:any)=>{
         if(token!==requestId.current)return;
         if(event.type==="office-start"){
@@ -138,12 +146,8 @@ export default function CommuteApp() {
           return old?{...previous,[event.officeId]:{...old,localSearch:event.localSearch}}:previous;
         });
         if(event.type==="plan"){
-          const plan=event.plan as Plan;
+          const plan=event.preparedPlanId?hydratePreparedPaths(event.plan,event.preparedPlanId):event.plan as Plan;
           plan.originalReferenceDuration=event.originalTotalDuration;plan.originalReferenceScope=event.originalReferenceScope;
-          if(event.preparedPlanId){
-            const base=Object.values(railRef.current?.plans[plan.officeId]??{}).find(candidate=>candidate.id===event.preparedPlanId);
-            if(base)plan.legs=plan.legs.map((leg,index)=>index>0?{...leg,paths:base.legs[index-1]?.paths??leg.paths}:leg);
-          }
           setResults(previous=>{
             const old=previous[plan.officeId]??{officeId:plan.officeId,plans:[],checked:0,complete:false,errors:[],measuredAt:plan.measuredAt};
             return {...previous,[plan.officeId]:{...old,plans:[...old.plans.filter(candidate=>candidate.id!==plan.id),plan]}};
@@ -152,6 +156,7 @@ export default function CommuteApp() {
         }
         if(event.type==="office-result"){
           const next=event.result as Verification;settled.current.add(next.officeId);
+          if(next.reused)next.plans=next.plans.map(plan=>hydratePreparedPaths(plan));
           setResults(previous=>({...previous,[next.officeId]:next.reused?next:{...next,plans:next.plans.map(plan=>previous[next.officeId]?.plans.find(old=>old.id===plan.id)??plan)}}));
           if(next.reused&&next.officeId===activeRef.current)setSelectedPlan(previous=>manualPlan.current
             ?next.plans.find(plan=>plan.id===previous?.id)??null

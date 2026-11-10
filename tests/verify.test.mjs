@@ -15,12 +15,14 @@ const handlerSource=ts.transpileModule(readFileSync(new URL('../app/api/verify/r
   compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}
 }).outputText;
 const point=[113.925797,22.510346],measuredAt='2026-11-09T01:00:00.000Z';
-const offices=[{id:'innovation',name:'创新工区',poiId:'B0OFFICE01',walkingIdentity:'poi',entrance:[113.946916,22.529489]},
-  {id:'prince',name:'太子工区',poiId:'B0OFFICE02',entrance:[113.914019,22.484158]}];
+const offices=[{id:'innovation',name:'创新工区',poiId:'B0OFFICE01',walkingIdentity:'poi',entrance:[113.947074,22.529024]},
+  {id:'prince',name:'太子工区',poiId:'B0OFFICE02',entrance:[113.914019,22.484158]},
+  {id:'jinghu',name:'景湖工区',poiId:'B0OFFICE03',entrance:[113.941052,22.511838]}];
+const profiles=Object.fromEntries(offices.map(({id})=>[id,JSON.parse(readFileSync(new URL(`../data/office-profiles/${id}-fixed-egress.json`,import.meta.url),'utf8'))]));
 const leg=(mode,duration,origin,destination,from,to)=>({mode,duration,origin,destination,from,to,
   label:mode,distance:100,paths:[],source:'amap',measuredAt});
 
-async function verify({surface={},direct={},access=200,fixed=[720,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,unnamedAccess=false,elapsedPerCall=0,recommendedMetro,recommendedTail=150,stationDuration=720,stationLegs,sharedCache,refresh=false}={}){
+async function verify({surface={},direct={},access=200,fixed=[720,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,unnamedAccess=false,elapsedPerCall=0,recommendedMetro,recommendedTail=150,stationDuration=720,stationLegs,sharedCache,refresh=false,fixedEgressOffices=[],arrival='粤海门'}={}){
   const calls=[],work=[],requests=[],stationRequests=[];
   let elapsed=0,budget,accessIndex=0;
   const deadline=deadlineController??new AbortController();
@@ -29,13 +31,20 @@ async function verify({surface={},direct={},access=200,fixed=[720,150],officeIds
   const stations=Array.from({length:stationCount},(_,i)=>({id:`nanyou-${i}`,name:i?`南油${i}`:'南油',location:point}));
   const plans=Object.fromEntries(offices.map(office=>[office.id,Object.fromEntries(stations.map(station=>[station.id,{id:`${office.id}-${station.id}`,
     stationId:station.id,stationName:station.name,officeId:office.id,duration:fixed[0]+fixed[1],measuredAt,
-    metroApi:{originName:station.name,destinationName:'粤海门'},legs:[
-      leg('metro',fixed[0],point,[113.945531,22.532695],station.name+'站','粤海门站'),
-      {...leg('walking',fixed[1],[113.945531,22.532695],staleOfficeEndpoint?[113.947837,22.528476]:office.entrance,'粤海门E口',office.name),routingIdentity:staleRoutingIdentity?undefined:'poi',originPoiId:'B0EXIT0001',destinationPoiId:office.poiId}]}]))]));
+    metroApi:{originName:station.name,destinationName:arrival},legs:[
+      leg('metro',fixed[0],point,[113.945531,22.532695],station.name+'站',arrival+'站'),
+      {...leg('walking',fixed[1],[113.945531,22.532695],staleOfficeEndpoint?[113.947837,22.528476]:office.entrance,arrival+'E口',office.name),routingIdentity:staleRoutingIdentity?undefined:'poi',originPoiId:'B0EXIT0001',destinationPoiId:office.poiId}]}]))]));
   const entries={...Object.fromEntries(stations.map((station,n)=>[station.id,Array.from({length:entryCount},(_,i)=>({id:`B0ENTRY${n}${i}`,name:unnamedAccess?'南油地铁站出入口':`南油地铁站${n}-${i}口`,location:[point[0]+i*.0001,point[1]+n*.0002],source:'amap'}))])),
     yuehaimen:[{id:'B0EXIT0001',name:'粤海门E口',location:[113.945531,22.532695],source:'amap'}]};
+  const profileModules=Object.fromEntries(offices.map(office=>{
+    const profile=profiles[office.id];
+    return [`@/data/office-profiles/${office.id}-fixed-egress.json`,{default:fixedEgressOffices.includes(office.id)
+      ?{...profile,officePoiId:office.poiId,officeEntrance:office.entrance}
+      :profile}];
+  }));
   const dependencies={
     '@/public/data/offices.json':{default:offices},
+    ...profileModules,
     '@/data/metro-index.json':{default:{complete:true,methodVersion:'amap-station-pair-v3',durationRounding:commute.DURATION_ROUNDING_VERSION,plans,entries}},
     '@/lib/local-access-server':{async localAccessTimes(origin,targets){work.push('local-model');if(localDeadline){deadline.abort();return new Promise(()=>{});}if(localFailure)throw new Error('unavailable');return {times:targets.map(()=>({walking:modelAccess,bicycling:modelAccess})),elapsedMs:1,osmDate:'2026-11-07'};}},
     '@/lib/segmented-search':segmentedSearch,
@@ -159,6 +168,42 @@ test('the complete journey gates are proved before loading or ranking the local 
   assert.equal(rail.searchParams.get('did'),'yuehaimen');
   assert.equal(result.plans.find(p=>p.metroMethod==='full').legs[0].recommendedMetro,undefined);
 });
+
+test('Shenzhen Bay uses the fixed exit even when the full journey recommends a different exit',async()=>{
+  const {calls,stationRequests,results:[result]}=await verify({recommendedMetro:recommendation(),entryCount:2,poiId:'B0HOME0001',fixedEgressOffices:['innovation']});
+  assert.deepEqual(calls,['innovation:walking','innovation:bicycling','innovation:direct','metro:stations','access:walking']);
+  assert.equal(stationRequests[0].destination.name,'粤海门');
+  const plan=result.plans.find(p=>p.id==='innovation-metro-recommended');
+  assert.deepEqual(plan.legs.at(-1),commute.roundLeg(profiles.innovation.routes['粤海门']));
+  assert.equal(plan.duration,1020);
+  assert.equal(result.plans.find(p=>p.metroMethod==='full').legs[0].destinationPoiId,offices[0].poiId);
+});
+
+test('prepared plans keep the fixed walking tail POIs and invalidate only the Shenzhen Bay cache',async()=>{
+  const sharedCache=new Map();
+  const args={sharedCache,officeIds:['innovation','prince'],arrival:'科苑',fixed:[720,300]};
+  await verify(args);
+  const {results:[innovation,prince]}=await verify({...args,fixedEgressOffices:['innovation']});
+  assert.equal(innovation.reused,undefined);
+  assert.equal(prince.reused,true);
+  const plan=innovation.plans.find(p=>p.metroMethod==='segmented');
+  assert.deepEqual(plan.legs.at(-1),commute.roundLeg(profiles.innovation.routes['科苑']));
+  assert.equal(plan.duration,1080);
+  assert.equal(plan.qualified,true);
+  const cached=await verify({...args,fixedEgressOffices:['innovation']});
+  assert.equal(cached.results[0].reused,true);
+  assert.deepEqual(cached.results[0].plans.find(p=>p.id===plan.id),plan);
+});
+
+for(const [office,arrival] of [['prince','海上世界'],['jinghu','人才公园']]){
+  test(`${office} applies its measured egress to the station-pair fallback`,async()=>{
+    const {results:[result]}=await verify({officeIds:[office],arrival,fixedEgressOffices:['prince','jinghu']});
+    const plan=result.plans.find(p=>p.metroMethod==='segmented');
+    const tail=commute.roundLeg(profiles[office].routes[arrival]);
+    assert.deepEqual(plan.legs.at(-1),tail);
+    assert.equal(plan.duration,900+tail.duration);
+  });
+}
 
 test('recommended gates compare mixed walking/cycling at both ends before trying other stations',async()=>{
   const {calls,work,results:[result]}=await verify({recommendedMetro:recommendation(),entryCount:2,access:[600,200],recommendedTail:{walking:150,bicycling:500}});

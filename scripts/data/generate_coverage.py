@@ -12,6 +12,11 @@ from duration_policy import plan_seconds,ROUNDING_VERSION,ROUND_UP_SECONDS
 from coverage_geometry import complete_small_holes,apply_verified_communities,polygon_parts
 
 RES=50
+def fixed_egress_for_office(office, config):
+    if (office['id'],office['poiId'],office['entrance'])==(config['officeId'],config['officePoiId'],config['officeEntrance']):
+        return config['routes']
+    return {}
+
 def mask_geometry(mask,xs,ys):
     strips=[]
     for row,y in zip(mask,ys):
@@ -42,6 +47,14 @@ def generate_coverage(rail, offices, net, correction, corrections):
     """Generate only the supplied offices; callers may stage before installation."""
     if not rail['complete'] or rail.get('methodVersion')!='amap-station-pair-v3':
         raise RuntimeError('Verified station-pair preparation is not complete.')
+    profiles={profile['officeId']:profile for profile in (
+        json.loads(path.read_text()) for path in (ROOT/'data/office-profiles').glob('*-fixed-egress.json')
+    )}
+    egress_by_office={
+        office['id']:fixed_egress_for_office(office,profiles[office['id']]) if office['id'] in profiles else {}
+        for office in offices
+    }
+    updated_corrections=[]
     for office in offices:
         for plan in rail['plans'][office['id']].values():
             if not plan['legs'] or plan['legs'][-1]['destination']!=office['entrance']:
@@ -61,7 +74,15 @@ def generate_coverage(rail, offices, net, correction, corrections):
         def to_projected(x,y,z=None):
             if np.isscalar(x):return net.point([x,y])
             points=[net.point([a,b]) for a,b in zip(x,y)];return [p[0] for p in points],[p[1] for p in points]
-        feature['geometry']=transform(to_projected,shape(feature['geometry']))
+        proof=props.get('proof',{})
+        if proof.get('method')=='segmented':
+            station=proof.get('metroApi',{}).get('destinationName')
+            tail=egress_by_office.get(props['officeId'],{}).get(station)
+            if tail:
+                legs=[*proof['legs'][:-1],tail]
+                raw=sum(leg.get('rawDuration',leg['duration']) for leg in legs)
+                props={**props,'durationSeconds':raw,'proof':{**proof,'legs':legs,'duration':raw}}
+        updated_corrections.append({**feature,'properties':props,'geometry':transform(to_projected,shape(feature['geometry']))})
     features=[];completion={};community_stats={}
     for office in offices:
         oid=office['id'];fields={}
@@ -69,7 +90,8 @@ def generate_coverage(rail, offices, net, correction, corrections):
             fields[mode]=net.field([(office['entrance'],0)],mode,limit=3600)
         targets=[]
         for sid,p in rail['plans'][oid].items():
-            fixed_duration=plan_seconds(p)
+            tail=egress_by_office[oid].get(p.get('metroApi',{}).get('destinationName'))
+            fixed_duration=plan_seconds({'legs':[*p['legs'][:-1],tail]} if tail else p)
             # Residential access is a separate leg and costs at least one minute.
             if fixed_duration+60>1200:continue
             for entry in rail['entries'].get(sid,[]):
@@ -97,7 +119,7 @@ def generate_coverage(rail, offices, net, correction, corrections):
             # Use the same threshold as each runtime measurement leg.
             mask=(np.maximum(60,np.floor((values[mode]+60-ROUND_UP_SECONDS)/60)*60)<=limit).reshape(len(ys),len(xs));geometry=mask_geometry(mask,xs,ys)
             if geometry is not None:geometries[mode]=geometry
-        geometries,community_stats[oid]=apply_verified_communities(geometries,[f for f in corrections if f['properties']['officeId']==oid])
+        geometries,community_stats[oid]=apply_verified_communities(geometries,[f for f in updated_corrections if f['properties']['officeId']==oid])
         geometries,completion[oid]=complete_small_holes(geometries)
         for mode,geometry in geometries.items():
             if geometry is None:continue

@@ -1,5 +1,8 @@
 import offices from "@/public/data/offices.json";
 import metro from "@/data/metro-index.json";
+import innovationEgress from "@/data/office-profiles/innovation-fixed-egress.json";
+import jinghuEgress from "@/data/office-profiles/jinghu-fixed-egress.json";
+import princeEgress from "@/data/office-profiles/prince-fixed-egress.json";
 import stationData from "@/public/data/stations.json";
 import {VERIFY_TIMEOUT_MS,rankAccessCandidates} from "@/lib/segmented-search";
 import {localAccessTimes} from "@/lib/local-access-server";
@@ -16,6 +19,13 @@ const prepared=metro as unknown as Index;
 // The original 30-second snapshots predate this metadata field.
 const preparedRounding=prepared.durationRounding??"per-leg-minute-half-up-min-one-v2";
 const preparedReady=prepared.complete&&prepared.methodVersion==="amap-station-pair-v3"&&preparedRounding===DURATION_ROUNDING_VERSION;
+const egressByOffice=new Map<string,{routes:Record<string,Leg>;version:string}>();
+for(const profile of [innovationEgress,jinghuEgress,princeEgress]){
+  const office=offices.find(office=>office.id===profile.officeId&&office.poiId===profile.officePoiId
+    &&office.entrance.every((value,index)=>value===profile.officeEntrance[index]));
+  if(office)egressByOffice.set(office.id,{routes:profile.routes as unknown as Record<string,Leg>,version:JSON.stringify(profile)});
+}
+const fixedEgress=(officeId:string,station:string)=>egressByOffice.get(officeId)?.routes[station];
 const preparedCandidates=(officeId:string,origin:Coord)=>Object.values(preparedReady?prepared.plans[officeId]??{}:{})
   .filter(plan=>{
     const office=offices.find(o=>o.id===officeId),tail=plan.legs.at(-1);
@@ -24,7 +34,11 @@ const preparedCandidates=(officeId:string,origin:Coord)=>Object.values(preparedR
       &&(!("walkingIdentity" in office&&office.walkingIdentity==="poi"&&tail.mode==="walking")||tail.routingIdentity==="poi");
   })
   .filter(plan=>plan.metroApi?.originName===plan.stationName&&plan.legs.find(l=>l.mode==="metro")?.from===plan.stationName+"站"&&plan.legs.filter(l=>l.mode==="metro").at(-1)?.to===plan.metroApi.destinationName+"站")
-  .map(plan=>({...plan,legs:plan.legs.map(roundLeg),duration:sumLegDurations(plan.legs)}))
+  .map(plan=>{
+    const tail=plan.metroApi&&fixedEgress(officeId,plan.metroApi.destinationName);
+    const legs=(tail?[...plan.legs.slice(0,-1),tail]:plan.legs).map(roundLeg);
+    return {...plan,legs,duration:sumLegDurations(legs)};
+  })
   .flatMap(plan=>(prepared.entries[plan.stationId]??[]).filter(entry=>entry.source==="amap"&&hasGateNumber(entry.name)).map(entry=>({plan,entry,distance:distanceMeters(origin,entry.location)})));
 const coordinateKey=(location:Coord)=>location.map(n=>n.toFixed(6)).join(",");
 const entranceKey=(name:string,location:Coord)=>`${name}:${coordinateKey(location)}`;
@@ -68,8 +82,10 @@ export async function POST(request:Request) {
         for(const office of selectedOffices) {
           if(stopped())break;
           const startedAt=Date.now();
+          const egressVersion=egressByOffice.get(office.id)?.version;
           const key=verificationCacheKey(office.id,input.location,originPoiId,JSON.stringify([office.name,office.entrance,office.poiId,
-            "walkingIdentity" in office?office.walkingIdentity:null,DURATION_ROUNDING_VERSION,LIMITS,METRO_DRILL_DOWN_FROM,METRO_DEPARTURE.label,prepared.methodVersion,prepared.generatedAt,preparedReady]));
+            "walkingIdentity" in office?office.walkingIdentity:null,DURATION_ROUNDING_VERSION,LIMITS,METRO_DRILL_DOWN_FROM,METRO_DEPARTURE.label,prepared.methodVersion,prepared.generatedAt,preparedReady,
+            ...(egressVersion?[egressVersion]:[])]));
           const cached=await readSharedVerification(key,input.name);
           if(stopped())break;
           if(cached&&!refresh){send({type:"office-result",result:cached});continue;}
@@ -125,9 +141,10 @@ export async function POST(request:Request) {
               const station=(name:string)=>stationData.stations.find(s=>s.name===name);
               const boarding=station(recommendation.entry.stationName),alighting=station(recommendation.exit.stationName);
               const entryGates=recommendedStreetGates(recommendation.entry,boarding?prepared.entries[boarding.id]??[]:[]);
-              const exitGates=recommendedStreetGates(recommendation.exit,alighting?prepared.entries[alighting.id]??[]:[]);
+              const tail=alighting&&fixedEgress(office.id,alighting.name);
+              const exitGates=tail?[]:recommendedStreetGates(recommendation.exit,alighting?prepared.entries[alighting.id]??[]:[]);
               let stationProof:Awaited<ReturnType<typeof stationMetro>>=null;
-              if(entryGates.length&&exitGates.length&&boarding&&alighting&&boarding.id!==alighting.id)try{
+              if(entryGates.length&&(tail||exitGates.length)&&boarding&&alighting&&boarding.id!==alighting.id)try{
                 result.checked++;
                 stationProof=await stationMetro(boarding,alighting,apiOptions);
               }catch(error){accessError(error);}
@@ -137,7 +154,7 @@ export async function POST(request:Request) {
                   return roundLeg({...raw,measuredAt:stationProof!.measuredAt,
                     ...(raw.mode==="metro"?{origin:a?a.location as Coord:raw.origin,destination:b?b.location as Coord:raw.destination,originPoiId:a?.id,destinationPoiId:b?.id}:{} )});
                 });
-                const first:Leg[]=[],last:Leg[]=[];
+                const first:Leg[]=[],last:Leg[]=tail?[roundLeg(tail)]:[];
                 const id=`${office.id}-metro-recommended`;
                 const publish=()=>{
                   const combinations=first.flatMap(a=>last.map(b=>[a,...rails,b]));
@@ -153,8 +170,7 @@ export async function POST(request:Request) {
                   }
                   return hasShortMetro();
                 };
-                // Check walking at both ends first. If it fails, compare cycling
-                // at both ends as well, retaining every successful combination.
+                // Check walking before cycling for each end that still needs a route.
                 for(const mode of ["walking","bicycling"] as const){
                   if(stopped()||apiSignal.aborted||!continueAccess)break;
                   const responses=await Promise.allSettled([
@@ -196,7 +212,7 @@ export async function POST(request:Request) {
                       if(index!==candidate.plan.legs.length-1||leg.kind==="transfer")return leg;
                       const gate=entrances.get(entranceKey(leg.from,leg.origin));
                       // Only retain IDs that were actually sent to the surface API.
-                      return leg.routingIdentity==="poi"?{...leg,originPoiId:gate?.id,destinationPoiId:office.poiId}:leg;
+                      return leg.routingIdentity==="poi"?{...leg,originPoiId:leg.originPoiId??gate?.id,destinationPoiId:leg.destinationPoiId??office.poiId}:leg;
                     }
                     const pair=leg.instructions?.[0]?.split("：")[1]?.split(" → ");
                     const a=stationData.stations.find(s=>s.name===(pair?.[0]??leg.from.replace(/站$/,""))),b=stationData.stations.find(s=>s.name===(pair?.[1]??leg.to.replace(/站$/,"")));
