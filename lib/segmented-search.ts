@@ -3,6 +3,9 @@ import type {AccessTime,AccessMode} from "./local-road-network.ts";
 
 // Stream early results; allow sequential route queries to finish on hosted Workers.
 export const VERIFY_TIMEOUT_MS=60000;
+// Screening is a search heuristic, not proof of ineligibility. Keep five
+// minutes of model slack; recommended gates are proved separately first.
+export const ACCESS_ESTIMATE_CEILING=1500;
 export type AccessCandidate={plan:{stationId:string;duration:number};entry:{id:string;location:Coord};distance:number};
 
 /** Compare every prepared entrance/mode; model times rank API proofs only. */
@@ -40,7 +43,8 @@ export function rankAccessCandidates<T extends AccessCandidate>(candidates:T[],t
     }).filter(option=>Number.isFinite(option.cosine)&&option.cosine<-.7).sort((a,b)=>a.cosine-b.cosine)[0]?.task:undefined;
   const preferred=[nearbyWalking,opposite].filter((task):task is typeof tasks[number]=>!!task);
   const preferredKeys=new Set(preferred.map(task=>task.key));
-  const ordered=[...preferred,...sorted.filter(task=>!preferredKeys.has(task.key))];
+  const ordered=[...preferred,...sorted.filter(task=>!preferredKeys.has(task.key)&&
+    (task.estimatedDuration??task.candidate.plan.duration+roundDuration(task.candidate.distance/(task.mode==="walking"?1.25:2.5)))<=ACCESS_ESTIMATE_CEILING)];
   const perStation=new Map<string,number>(),proofs:typeof tasks=[],deferred:typeof tasks=[];
   for(const task of ordered) {
     const station=task.candidate.plan.stationId,count=perStation.get(station)??0;

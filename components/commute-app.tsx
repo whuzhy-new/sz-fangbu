@@ -8,6 +8,7 @@ import AnimatedCollapse from "./animated-collapse";
 import SavedPlaces from "./saved-places";
 import {PREFERENCES_KEY,SAVED_PLACES_KEY,placeKey,readPreferences,readSavedPlaces,rememberPlace,toggleFavorite} from "@/lib/commute-storage";
 import {assessMapPick} from "@/lib/coverage";
+import {visiblePlans} from "@/lib/plan-results";
 import {amapPoiId,placePoiId,MODE_LABEL,QUERY_STAGE_LABEL,withinShenzhen,type Coord,type Mode,type Office,type Place,type Plan,type QueryStage,type Verification} from "@/lib/commute";
 import type {Coverage,RailData,Validation} from "@/lib/map-types";
 
@@ -16,7 +17,6 @@ const officeNames:Record<string,string>={innovation:"深圳湾",jinghu:"景湖",
 const officeOrder=Object.keys(officeNames);
 const SETTINGS_VISITED_KEY="shenzhen-housing-map:settings-visited";
 const OFFICE_SELECTED_KEY="shenzhen-housing-map:office-selected";
-const validPlans=(plans:Plan[]=[])=>plans.filter(plan=>plan.mode!=="metro"||plan.metroMethod==="full"||plan.legs.find(leg=>leg.mode==="metro")?.from===plan.title.replace(/^经/,"")).sort((a,b)=>Number(b.qualified)-Number(a.qualified)||a.duration-b.duration);
 
 export default function CommuteApp() {
   const [offices,setOffices]=useState<Office[]>([]);
@@ -44,7 +44,14 @@ export default function CommuteApp() {
   const abort=useRef<AbortController|null>(null),requestId=useRef(0),settled=useRef(new Set<string>());
   const railRef=useRef<RailData|null>(null),activeRef=useRef(activeId);
   activeRef.current=activeId;
-  const result=results[activeId],plans=validPlans(result?.plans);
+  const result=results[activeId],plans=visiblePlans(result?.plans);
+
+  useEffect(()=>{
+    if(selectedPlan?.officeId!==activeId||selectedPlan.metroMethod!=="segmented")return;
+    const current=visiblePlans(result?.plans);
+    const next=current.find(plan=>plan.id===selectedPlan.id)??current.find(plan=>plan.metroMethod==="segmented")??null;
+    if(next!==selectedPlan)setSelectedPlan(next);
+  },[result,activeId,selectedPlan]);
 
   useEffect(()=>{
     if(settingsInitialized.current)return;
@@ -217,7 +224,7 @@ export default function CommuteApp() {
     if(isMobile&&needsOffice){setNeedsOffice(false);setMobileOpen(false);}
     if(id===activeId)return;
     setActiveId(id);activeRef.current=id;manualPlan.current=false;
-    setSelectedPlan(validPlans(results[id]?.plans).find(plan=>plan.qualified)??null);
+    setSelectedPlan(visiblePlans(results[id]?.plans).find(plan=>plan.qualified)??null);
     if(home&&!settled.current.has(id))verify(home,[id]);
   }
   function reset(){

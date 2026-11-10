@@ -57,3 +57,19 @@ test('a nearby station also checks a walking entrance on the opposite side',()=>
   assert.deepEqual(result.proofs.slice(0,3).map(task=>task.key),['near:c:walking','near:a:walking','far:x:bicycling']);
   assert.ok(result.proofs.some(task=>task.key==='near:d:walking'));
 });
+
+test('clearly over-limit model estimates do not spend API proofs on long detours',()=>{
+  const result=rankAccessCandidates([candidate('possible','a',800),candidate('detour','b',900)],
+    [{walking:840,bicycling:600},{walking:2400,bicycling:2000}]);
+  assert.equal(result.summary.total,4); // The local comparison still covers every combination.
+  assert.ok(result.proofs.length>0);
+  assert.ok(result.proofs.every(task=>task.candidate.plan.stationId==='possible'));
+});
+
+test('the estimate screen retains slack and protects a nearby walking gate',()=>{
+  const result=rankAccessCandidates([candidate('near','a',50),candidate('buffer','b',800)],
+    [{walking:2400,bicycling:2400},{walking:930,bicycling:900}]);
+  assert.equal(result.proofs[0].key,'near:a:walking');
+  assert.ok(result.proofs.some(task=>task.key==='buffer:b:bicycling')); // 25 minutes is screened in.
+  assert.ok(!result.proofs.some(task=>task.key==='buffer:b:walking')); // 25:30 rounds to 26 and is screened out.
+});
