@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {fullMetroLeg} from '../lib/full-metro.ts';
+import {fullMetroLeg,stationMetroLegs} from '../lib/full-metro.ts';
 import {sumLegDurations} from '../lib/commute.ts';
 
 const station=(name:string,location:string)=>({name,location});
@@ -20,8 +20,10 @@ test('the full API route retains its actual gates while the original total remai
   const rec=full.recommendedMetro!;
   assert.deepEqual(rec.entry,{stationName:'水湾',name:'水湾地铁站C口',location:[113.920238,22.488635]});
   assert.deepEqual(rec.exit,{stationName:'科苑',name:'科苑地铁站出入口',location:[113.946909,22.527693]});
-  assert.deepEqual(rec.legs.map(l=>[l.mode,l.from,l.to,l.duration]),[['metro','水湾站','科苑站',990]]);
-  assert.equal(sumLegDurations(rec.legs),1020); // No initial/final station walking or invented waiting.
+  assert.equal('legs' in rec,false); // The full query supplies gate hints only.
+  const rail=stationMetroLegs({route:{transits:[fixture()]}},'水湾','科苑')!;
+  assert.deepEqual(rail.legs.map(l=>[l.mode,l.from,l.to,l.duration]),[['metro','水湾站','科苑站',990]]);
+  assert.equal(sumLegDurations(rail.legs),1020); // No initial/final station walking or invented waiting.
 });
 
 test('intermediate transfer walks are kept and rounded as separate legs',()=>{
@@ -36,21 +38,32 @@ test('intermediate transfer walks are kept and rounded as separate legs',()=>{
       arrival_stop:{...station('科苑','113.946195,22.527019'),exit:{name:'出入口',location:'113.946909,22.527693'}},
     }]},
   });
-  const rec=parse(transit)!.recommendedMetro!;
+  const rec=stationMetroLegs({route:{transits:[transit]}},'水湾','科苑')!;
   assert.deepEqual(rec.legs.map(l=>[l.mode,l.kind,l.duration]),[['metro',undefined,300],['walking','transfer',91],['metro',undefined,600]]);
   assert.equal(sumLegDurations(rec.legs),1020);
 });
 
-test('missing gates or rail duration disable the shortcut without discarding the full route',()=>{
+test('missing gates disable the shortcut without discarding the full route',()=>{
   for(const change of [
     (t:ReturnType<typeof fixture>)=>{t.segments[0].bus!.buslines[0].departure_stop.entrance.location='';},
     (t:ReturnType<typeof fixture>)=>{t.segments[0].bus!.buslines[0].arrival_stop.exit.location='bad';},
-    (t:ReturnType<typeof fixture>)=>{t.segments[0].bus!.buslines[0].cost.duration='';},
   ]){
     const t=fixture();change(t);
     const full=parse(t)!;
     assert.equal(full.duration,1376);
     assert.equal(full.recommendedMetro,undefined);
+  }
+});
+
+test('station-pair parsing rejects wrong boarding/alighting, missing times and non-metro journeys',()=>{
+  assert.equal(stationMetroLegs({route:{transits:[fixture()]}},'湾厦','科苑'),null);
+  assert.equal(stationMetroLegs({route:{transits:[fixture()]}},'水湾','粤海门'),null);
+  for(const change of [
+    (t:ReturnType<typeof fixture>)=>{t.segments[0].bus!.buslines[0].cost.duration='';},
+    (t:ReturnType<typeof fixture>)=>{t.segments[0].bus!.buslines[0].type='普通公交线路';},
+  ]){
+    const t=fixture();change(t);
+    assert.equal(stationMetroLegs({route:{transits:[t]}},'水湾','科苑'),null);
   }
 });
 

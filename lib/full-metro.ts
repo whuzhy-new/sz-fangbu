@@ -1,4 +1,4 @@
-import { polyline, surfaceDuration, type Coord, type Leg } from "./commute.ts";
+import { polyline, surfaceDuration, sumLegDurations, type Coord, type Leg } from "./commute.ts";
 
 // Keep the provider's complete journey total. It includes access, egress,
 // transfers and provider waiting estimates; do not rebuild it from line times.
@@ -11,7 +11,7 @@ type Transit = {cost?:{duration?:unknown};duration?:unknown;distance?:unknown;se
 type TransitResponse = {route?:{transits?:Transit[]}};
 const populated=(value:unknown):boolean=>value!=null&&typeof value==="object"&&Object.keys(value).length>0;
 export type MetroGate={stationName:string;name:string;location:Coord};
-export type RecommendedMetro={entry:MetroGate;exit:MetroGate;legs:Leg[]};
+export type RecommendedMetro={entry:MetroGate;exit:MetroGate};
 export type FullMetroLeg=Leg&{recommendedMetro?:RecommendedMetro};
 const coordinate=(value:unknown):Coord|undefined=>{
   if(typeof value!=="string")return;
@@ -23,16 +23,12 @@ const gate=(stop:Stop|undefined,kind:"entrance"|"exit"):MetroGate|undefined=>{
   if(stop?.name&&name&&location)return {stationName:stop.name,name:`${stop.name}地铁站${name}`,location};
 };
 
-// Preserve the exact recommended street gates and API rail/transfer legs.
-// First/last station walks are replaced by street routes, never subtracted
-// from the provider's complete total or mistaken for transfer walks.
-function recommendedMetro(segments:Segment[]):RecommendedMetro|undefined {
+// Extract rail and intermediate transfer walks from an explicit station-pair
+// query. Initial/final station walks never enter the segmented metro clock.
+function journeyLegs(segments:Segment[]):Leg[]|undefined {
   const indices=segments.flatMap((segment,index)=>segment.bus?.buslines?.length?[index]:[]);
   const first=indices[0],last=indices.at(-1);
   if(first===undefined||last===undefined)return;
-  const entry=gate(segments[first].bus!.buslines![0].departure_stop,"entrance");
-  const exit=gate(segments[last].bus!.buslines![0].arrival_stop,"exit");
-  if(!entry||!exit)return;
   const legs:Leg[]=[];
   let previous:Line|undefined;
   for(let index=first;index<=last;index++){
@@ -56,7 +52,21 @@ function recommendedMetro(segments:Segment[]):RecommendedMetro|undefined {
       previous=line;
     }
   }
-  return {entry,exit,legs};
+  return legs;
+}
+
+/** Only accept journeys boarding/alighting at the requested stations. */
+export function stationMetroLegs(data:TransitResponse,from:string,to:string):{legs:Leg[];originalTotalDuration:number|null}|null {
+  const options=[];
+  for(const transit of data.route?.transits??[]){
+    const segments=transit.segments??[],lines=segments.flatMap(s=>s.bus?.buslines??[]);
+    if(!lines.length||lines.some(l=>l.type!=="地铁线路")||segments.some(s=>populated(s.railway)||populated(s.taxi)||populated(s.riding)))continue;
+    const usedLines=segments.flatMap(s=>(s.bus?.buslines??[]).slice(0,1));
+    if(usedLines[0].departure_stop?.name!==from||usedLines.at(-1)?.arrival_stop?.name!==to)continue;
+    const legs=journeyLegs(segments);
+    if(legs?.length)options.push({legs,originalTotalDuration:surfaceDuration(transit)});
+  }
+  return options.sort((a,b)=>sumLegDurations(a.legs)-sumLegDurations(b.legs))[0]??null;
 }
 
 export function fullMetroLeg(data:TransitResponse, origin:Coord, destination:Coord, from:string, to:string):FullMetroLeg|null {
@@ -73,8 +83,11 @@ export function fullMetroLeg(data:TransitResponse, origin:Coord, destination:Coo
       ...((s.bus?.buslines??[]).slice(0,1).map(line=>polyline(line.polyline))),
     ]).filter(path=>path.length>1);
     const usedLines=segments.flatMap(s=>(s.bus?.buslines??[]).slice(0,1));
+    // Only street gate hints are reused. Segmented rail is queried separately
+    // with the station POIs, never with the entrance/exit POIs or coordinates.
+    const entry=gate(usedLines[0].departure_stop,"entrance"),exit=gate(usedLines.at(-1)?.arrival_stop,"exit");
     const label=usedLines.map(l=>`${l.departure_stop?.name??"上车站"} → ${l.arrival_stop?.name??"下车站"} · ${(l.name??"地铁").split("(")[0]}`).join("；");
-    options.push({mode:"metro",kind:"full-transit",label,origin,destination,from,to,duration,distance:Number(transit.distance)||0,paths,source:"amap",recommendedMetro:recommendedMetro(segments)});
+    options.push({mode:"metro",kind:"full-transit",label,origin,destination,from,to,duration,distance:Number(transit.distance)||0,paths,source:"amap",recommendedMetro:entry&&exit?{entry,exit}:undefined});
   }
   return options.sort((a,b)=>a.duration-b.duration)[0]??null;
 }

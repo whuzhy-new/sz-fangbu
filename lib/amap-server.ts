@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { createHash } from "node:crypto";
 import { polyline, surfaceDuration, type Coord, type Leg } from "./commute";
-import { fullMetroLeg, type FullMetroLeg } from "./full-metro";
+import { fullMetroLeg, stationMetroLegs, type FullMetroLeg } from "./full-metro";
 import {surfaceRouteParams,transitRouteParams} from "./amap-route-params";
 
 export const METRO_DEPARTURE = {date:"2026-11-09",time:"09-00",label:"2026-11-09 09:00"};
@@ -91,4 +91,16 @@ export async function fullMetro(origin:Coord,destination:Coord,from:string,to:st
   },"routes",options);
   const leg=fullMetroLeg(data,origin,destination,from,to);
   return leg?{...leg,...identity.endpoints,measuredAt:new Date(createdAt).toISOString(),cached}:null;
+}
+
+type StationEndpoint={id:string;name:string;location:number[]};
+export async function stationMetro(origin:StationEndpoint,destination:StationEndpoint,options:RequestOptions={}) {
+  const identity=transitRouteParams(origin.location as Coord,destination.location as Coord,{originPoiId:origin.id,destinationPoiId:destination.id});
+  if(!identity.endpoints.originPoiId||!identity.endpoints.destinationPoiId)throw new MapApiError("地铁站点信息不完整，暂未完成站间查询。","INVALID_STATION");
+  const {data,createdAt}=await amap("v5/direction/transit/integrated",{
+    ...identity.params,city1:"0755",city2:"0755",strategy:6,
+    date:METRO_DEPARTURE.date,time:METRO_DEPARTURE.time,show_fields:"cost,polyline,navi",
+  },"routes",options);
+  const journey=stationMetroLegs(data,origin.name,destination.name);
+  return journey?{...journey,measuredAt:new Date(createdAt).toISOString()}:null;
 }

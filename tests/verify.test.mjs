@@ -19,8 +19,8 @@ const offices=[{id:'innovation',name:'创新工区',poiId:'B0OFFICE01',walkingId
 const leg=(mode,duration,origin,destination,from,to)=>({mode,duration,origin,destination,from,to,
   label:mode,distance:100,paths:[],source:'amap',measuredAt});
 
-async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,elapsedPerCall=0,recommendedMetro,recommendedTail=150}={}){
-  const calls=[],work=[],requests=[];
+async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds=['innovation'],entryCount=1,stationCount=1,modelAccess=200,deadlineController,abortAfterSurface=false,localFailure=false,localDeadline=false,poiId,staleOfficeEndpoint=false,staleRoutingIdentity=false,elapsedPerCall=0,recommendedMetro,recommendedTail=150,stationDuration=750,stationLegs}={}){
+  const calls=[],work=[],requests=[],stationRequests=[];
   let elapsed=0,budget,accessIndex=0;
   const deadline=deadlineController??new AbortController();
   const advance=()=>{elapsed+=elapsedPerCall;if(elapsed>=budget)deadline.abort();};
@@ -61,6 +61,13 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
         const duration=direct[office.id]??1230;
         if(duration==='error')throw new MapApiError('完整地铁查询失败');
         return {...leg('metro',duration,origin,destination,from,to),kind:'full-transit',recommendedMetro,...transitRouteParams(origin,destination,options).endpoints};
+      },
+      async stationMetro(origin,destination,options){
+        calls.push('metro:stations');work.push(calls.at(-1));advance();
+        stationRequests.push({origin,destination,options});
+        if(stationDuration?.error)throw new MapApiError('站间查询暂未完成',stationDuration.error);
+        if(stationDuration===null)return null;
+        return {legs:stationLegs??[leg('metro',stationDuration,origin.location,destination.location,origin.name+'站',destination.name+'站')],originalTotalDuration:stationDuration,measuredAt};
       }
     }
   };
@@ -83,17 +90,20 @@ async function verify({surface={},direct={},access=200,fixed=[750,150],officeIds
   const events=(await response.text()).trim().split('\n').map(JSON.parse);
   assert.equal(events.at(-1).type,'done');
   assert.ok(!events.some(e=>e.type==='error'));
-  return {calls,work,requests,elapsed,events,results:events.filter(e=>e.type==='office-result').map(e=>e.result)};
+  return {calls,work,requests,stationRequests,elapsed,events,results:events.filter(e=>e.type==='office-result').map(e=>e.result)};
 }
 
 const recommendation=()=>({entry:{stationName:'南油',name:'南油地铁站0-1口',location:[point[0]+.0001,point[1]]},
-  exit:{stationName:'粤海门',name:'粤海门E口',location:[113.945531,22.532695]},
-  legs:[leg('metro',750,point,[113.945531,22.532695],'南油站','粤海门站')]});
+  exit:{stationName:'粤海门',name:'粤海门E口',location:[113.945531,22.532695]}});
 
 test('the complete journey gates are proved before loading or ranking the local road network',async()=>{
   const rec=recommendation();
-  const {calls,work,requests,results:[result]}=await verify({recommendedMetro:rec,entryCount:2});
-  assert.deepEqual(calls,['innovation:walking','innovation:bicycling','innovation:direct','access:walking','tail:walking']);
+  const {calls,work,requests,stationRequests,results:[result]}=await verify({recommendedMetro:rec,entryCount:2});
+  assert.deepEqual(calls,['innovation:walking','innovation:bicycling','innovation:direct','metro:stations','access:walking','tail:walking']);
+  assert.equal(stationRequests[0].origin.id,'nanyou-0');
+  assert.deepEqual(stationRequests[0].origin.location,point);
+  assert.notDeepEqual(stationRequests[0].origin.location,rec.entry.location);
+  assert.equal(stationRequests[0].destination.id,'yuehaimen');
   assert.ok(!work.includes('local-model'));
   const plan=result.plans.find(p=>p.id==='innovation-metro-recommended');
   assert.ok(plan.qualified);
@@ -111,7 +121,7 @@ test('the complete journey gates are proved before loading or ranking the local 
 
 test('recommended gates compare mixed walking/cycling at both ends before trying other stations',async()=>{
   const {calls,work,results:[result]}=await verify({recommendedMetro:recommendation(),entryCount:2,access:[600,200],recommendedTail:{walking:150,bicycling:500}});
-  assert.deepEqual(calls.slice(3),['access:walking','tail:walking','access:bicycling','tail:bicycling']);
+  assert.deepEqual(calls.slice(3),['metro:stations','access:walking','tail:walking','access:bicycling','tail:bicycling']);
   assert.ok(!work.includes('local-model'));
   const plan=result.plans.find(p=>p.id==='innovation-metro-recommended');
   assert.ok(plan.qualified);
@@ -146,6 +156,31 @@ test('a failed recommended leg never becomes an estimated qualifying result',asy
   assert.ok(work.includes('local-model'));
   assert.ok(!result.plans.some(p=>p.id==='innovation-metro-recommended'));
   assert.ok(result.plans.some(p=>p.qualified));
+});
+
+test('recommended segmentation takes rail time from the separate station query',async()=>{
+  const {results:[result]}=await verify({recommendedMetro:recommendation(),entryCount:2,stationDuration:600});
+  const plan=result.plans.find(p=>p.id==='innovation-metro-recommended');
+  assert.equal(plan.legs[1].rawDuration,600);
+  assert.equal(plan.duration,960);
+  assert.equal(plan.originalReferenceScope,'stations');
+  for(const platform of ['ios','android']){
+    const middle=reviewRoutes(plan,platform).find(r=>r.id==='metro');
+    const params=new URL(middle.url).searchParams;
+    assert.equal(params.get('sname'),'南油(地铁站)');
+    assert.equal(params.get('dname'),'粤海门(地铁站)');
+    assert.equal(params.get('sid'),'nanyou-0');
+    assert.equal(params.get('did'),'yuehaimen');
+    assert.equal(params.get('t'),'1');
+    assert.deepEqual(middle.leg.origin,point);
+  }
+});
+
+test('an unavailable station-pair result never reuses home-to-office rail fields',async()=>{
+  const {calls,results:[result]}=await verify({recommendedMetro:recommendation(),entryCount:2,stationDuration:null});
+  assert.ok(calls.includes('metro:stations'));
+  assert.ok(!result.plans.some(p=>p.id==='innovation-metro-recommended'));
+  assert.ok(result.plans.some(p=>p.metroMethod==='segmented'&&p.qualified));
 });
 
 for(const [mode,duration] of [['walking',1800],['bicycling',1200]]){

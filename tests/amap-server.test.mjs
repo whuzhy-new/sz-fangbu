@@ -7,6 +7,7 @@ import {createContext,SourceTextModule,SyntheticModule} from 'node:vm';
 import ts from 'typescript';
 import * as commute from '../lib/commute.ts';
 import * as routeParams from '../lib/amap-route-params.ts';
+import * as metroParser from '../lib/full-metro.ts';
 
 const source=ts.transpileModule(readFileSync(new URL('../lib/amap-server.ts',import.meta.url),'utf8'),{
   compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}
@@ -47,7 +48,7 @@ async function harness({limit='100',upstream,onWait}={}){
     }
   });
   const dependencies={'cloudflare:workers':{env},'node:crypto':{createHash},'./commute':commute,
-    './full-metro':{fullMetroLeg:()=>null},'./amap-route-params':routeParams};
+    './full-metro':metroParser,'./amap-route-params':routeParams};
   const module=new SourceTextModule(source,{context});
   await module.link(specifier=>{
     const exports=dependencies[specifier];assert.ok(exports);
@@ -114,5 +115,22 @@ test('cancelling the overall query stops queued work before contacting AMap',asy
     await assert.rejects(h.api.amap('test',{origin:1},'routes',{signal:overall.signal}),{code:'TIME_BUDGET'});
     assert.equal(h.requests.length,0);
     assert.ok(h.queries.some(sql=>sql.includes('request-slot')));
+  }finally{h.db.close();}
+});
+
+test('segmented rail requests use station POIs and the station-only strategy',async()=>{
+  const a={id:'BV10249986',name:'水湾',location:[113.919686,22.488389]};
+  const b={id:'BV10249991',name:'科苑',location:[113.946195,22.527019]};
+  const h=await harness();
+  try{
+    await h.api.stationMetro(a,b);
+    const params=new URL(h.requests[0].url).searchParams;
+    assert.equal(params.get('originpoi'),a.id);
+    assert.equal(params.get('destinationpoi'),b.id);
+    assert.equal(params.get('origin'),a.location.join(','));
+    assert.equal(params.get('destination'),b.location.join(','));
+    assert.equal(params.get('strategy'),'6');
+    await assert.rejects(h.api.stationMetro({...a,id:'not-a-poi'},b),{code:'INVALID_STATION'});
+    assert.equal(h.requests.length,1); // No coordinate-only fallback request.
   }finally{h.db.close();}
 });
