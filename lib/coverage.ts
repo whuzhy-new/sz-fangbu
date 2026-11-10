@@ -6,7 +6,7 @@ export type CoverageAssessment={status:"inside"|"edge"|"outside"|"unavailable";m
 export const COVERAGE_FEATHER_METERS=40;
 export const COVERAGE_EDGE_METERS=COVERAGE_FEATHER_METERS*3;
 export const MAP_PICK_MAX_DISTANCE_METERS=500;
-const SURFACE_SEARCH_BUFFER_METERS=1000;
+const SURFACE_SEARCH_BUFFER_METERS=500;
 export type MapPickAssessment={allowed:boolean;reason:"within-range"|"too-far"|"unavailable";distanceMeters:number|null};
 const modes:Mode[]=["walking","bicycling","metro"];
 

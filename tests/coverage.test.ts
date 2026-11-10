@@ -131,18 +131,18 @@ test("large holes do not allow distant map confirmation and missing data stays u
   assert.equal(assessMapPick(coverage,"test",[NaN,22.54]).allowed,false);
 });
 
-test("surface checks skip only beyond both one-kilometre buffers, even inside the metro layer",()=>{
+test("surface checks skip only beyond both 500-metre buffers, even inside the metro layer",()=>{
   const coverage=fixture({type:"Polygon",coordinates:[square(113.9,22.5,.02)]});
   coverage.features[2].geometry={type:"Polygon",coordinates:[square(113.88,22.47,.06)]};
   const metresPerDegree=Math.PI/180*6371008.8;
   const point=(metres:number):Coord=>[113.91,22.5-metres/metresPerDegree];
-  assert.equal(firstQueryStage(coverage,"test",point(1000)),"surface");
-  assert.equal(firstQueryStage(coverage,"test",point(1001)),"metro-full");
-  assert.equal(assessMapPick(coverage,"test",point(1001)).allowed,true);
+  assert.equal(firstQueryStage(coverage,"test",point(500)),"surface");
+  assert.equal(firstQueryStage(coverage,"test",point(501)),"metro-full");
+  assert.equal(assessMapPick(coverage,"test",point(501)).allowed,true);
 
   coverage.features[1].geometry={type:"Polygon",coordinates:[square(113.9,22.49,.02)]};
-  assert.equal(firstQueryStage(coverage,"test",point(1001)),"surface");
+  assert.equal(firstQueryStage(coverage,"test",point(501)),"surface");
   coverage.features.splice(1,1);
-  assert.equal(firstQueryStage(coverage,"test",point(1001)),"surface");
-  assert.equal(firstQueryStage(null,"test",point(1001)),"surface");
+  assert.equal(firstQueryStage(coverage,"test",point(501)),"surface");
+  assert.equal(firstQueryStage(null,"test",point(501)),"surface");
 });
