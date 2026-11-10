@@ -54,6 +54,7 @@ input, select { min-width: 0; }
 .panel-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: -8px -9px 0 0; }
 .panel-title h1 { flex: 1; min-width: 0; margin: 0; font-size: 15px; font-weight: 550; color: var(--ink); }
 .panel-title .icon-button { color: var(--muted); }
+.guide-entry { flex-shrink: 0; }
 .settings-toggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 44px; padding: 0; text-align: left; border-radius: 8px; }
 .settings-toggle:hover { color: var(--green); }
 .settings-toggle > svg { color: var(--muted); transition: transform 220ms var(--ease-out); }
@@ -430,7 +431,7 @@ input, select { min-width: 0; }
   .mobile-panel .layer-chip { min-width: 0; padding: 0 4px; gap: 4px; white-space: normal; text-align: center; }
   .mobile-panel .search-options { max-height: none; margin-top: 0; overflow: visible; }
   .mobile-panel .saved-places-list { max-height: none; overflow: visible; }
-  .mobile-panel-footer { display: flex; justify-content: flex-end; margin-top: 8px; }
+  .mobile-panel-footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; }
   .search-input input { font-size: 16px; }
   .map-tools { top: auto; right: max(14px, env(safe-area-inset-right)); bottom: max(20px, env(safe-area-inset-bottom)); }
   .map-tools button { width: 40px; height: 44px; }

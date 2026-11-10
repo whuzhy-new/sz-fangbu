@@ -1,6 +1,6 @@
 "use client";
 import {useCallback,useEffect,useRef,useState,type CSSProperties,type FocusEvent} from "react";
-import {Check,ChevronDown,CircleHelp,History,LoaderCircle,MapPin,RotateCw,Search,Star,X} from "lucide-react";
+import {BookOpenText,Check,ChevronDown,CircleHelp,History,LoaderCircle,MapPin,RotateCw,Search,Star,X} from "lucide-react";
 import AtlasMap from "./atlas-map";
 import RouteResults from "./route-results";
 import RulesDialog from "./rules-dialog";
@@ -315,13 +315,13 @@ export default function CommuteApp() {
             {settingsFields}
             {!needsOffice&&searchChoices}
             {!needsOffice&&analysis}
-            <div className="mobile-panel-footer"><button className="text-button" onClick={()=>setInfo(true)}><CircleHelp size={15} aria-hidden="true"/>规则与数据</button></div>
+            <div className="mobile-panel-footer"><a className="text-button guide-entry" href="/guide.html" target="_blank" rel="noopener noreferrer"><BookOpenText size={15} aria-hidden="true"/>使用说明</a><button className="text-button" onClick={()=>setInfo(true)}><CircleHelp size={15} aria-hidden="true"/>规则与数据</button></div>
           </div>
         </AnimatedCollapse>
       </aside>:<>
       <aside className={`side-panel settings-panel ${settingsOpen?"is-expanded":""}`} aria-label="工区与图层">
         <div className="panel-scroll">
-          <div className="panel-title"><h1><button className="settings-toggle" title={settingsOpen?"收起工区与图层":"展开工区与图层"} aria-expanded={settingsOpen} aria-controls="office-layer-settings" onClick={toggleSettings}><span>深圳房补地图</span><ChevronDown size={17} aria-hidden="true"/></button></h1><button className="icon-button" aria-label="规则与数据" title="规则与数据" onClick={()=>setInfo(true)}><CircleHelp size={18} aria-hidden="true"/></button></div>
+          <div className="panel-title"><h1><button className="settings-toggle" title={settingsOpen?"收起工区与图层":"展开工区与图层"} aria-expanded={settingsOpen} aria-controls="office-layer-settings" onClick={toggleSettings}><span>深圳房补地图</span><ChevronDown size={17} aria-hidden="true"/></button></h1><a className="text-button guide-entry" href="/guide.html" target="_blank" rel="noopener noreferrer"><BookOpenText size={14} aria-hidden="true"/>使用说明</a><button className="icon-button" aria-label="规则与数据" title="规则与数据" onClick={()=>setInfo(true)}><CircleHelp size={18} aria-hidden="true"/></button></div>
           <AnimatedCollapse open={settingsOpen} id="office-layer-settings">{settingsFields}</AnimatedCollapse>
         </div>
       </aside>

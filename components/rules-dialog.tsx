@@ -48,7 +48,7 @@ export default function RulesDialog({open,onClose,coverage,rail,validation}:{ope
         <h3>申请前核对</h3>
         <ul className="application-notes">
           <li>测距起终点为小区门口与实际办公地点，注意核对入口。</li>
-          <li>点击“上高德看路线”，用手机扫码查看路线并截图；分段需保留各段截图。</li>
+          <li>点击“上高德看路线”，手机端直接打开高德，电脑端用手机扫码；分段需保留各段截图。</li>
         </ul>
         <p>仅限步行、普通自行车和地铁，公交、电瓶车、电动车、摩托车不计入。最终以公司要求的测距页面、截图和租住记录为准。</p>
       </section>

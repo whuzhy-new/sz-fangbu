@@ -4,7 +4,7 @@
 
 ## 使用说明
 
-[HTML 使用说明](docs/使用说明.html)包含操作录屏与截图。下载后直接打开，无需另带素材文件夹。
+[在线使用说明](https://sz-fangbu.sturdy-sage-7734.chatgpt.site/guide.html)包含操作录屏与截图。[HTML 文件](public/guide.html)下载后可直接打开，无需另带素材文件夹。
 
 ## 运行
 
