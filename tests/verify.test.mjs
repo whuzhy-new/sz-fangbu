@@ -271,6 +271,8 @@ test('one-minute access minimum rejects a 20-minute fixed plan before querying a
   const {calls,results:[result]}=await verify({fixed:[629,629],access:29});
   assert.ok(!result.plans.some(p=>p.qualified));
   assert.deepEqual(calls,['innovation:walking','innovation:bicycling','innovation:direct']);
+  assert.equal(result.complete,true);
+  assert.deepEqual(result.errors,[]);
 });
 
 test('a segmented route is rejected if its rounded parts total 21 minutes, even when raw total rounds to 20',async()=>{
@@ -307,7 +309,8 @@ test('local combinations are ranked before continuing beyond three AMap access p
   assert.ok(calls.filter(call=>call.startsWith('access:')).length>3);
   assert.equal(result.localSearch.total,240);
   assert.equal(result.localSearch.source,'model');
-  assert.equal(result.complete,false);
+  assert.equal(result.complete,true);
+  assert.deepEqual(result.errors,[]);
   assert.ok(!result.plans.some(p=>p.qualified));
   const localEvent=events.findIndex(e=>e.type==='local-search');
   const segmentedProof=events.findIndex(e=>e.type==='plan'&&e.plan.metroMethod==='segmented');
@@ -320,7 +323,24 @@ test('a promising model never becomes an AMap-qualified result without a success
   assert.equal(result.localSearch.withinLimit,80);
   assert.ok(!result.plans.some(p=>p.qualified));
   assert.ok(result.plans.every(p=>p.source==='amap'));
-  assert.equal(result.complete,false);
+  assert.equal(result.complete,true);
+  assert.deepEqual(result.errors,[]);
+});
+
+test('finishing all selected candidate queries reports completion even when every API route exceeds the limit',async()=>{
+  const {results:[result]}=await verify({access:900,entryCount:4});
+  assert.equal(result.complete,true);
+  assert.ok(result.plans.length>0);
+  assert.ok(result.plans.every(p=>!p.qualified));
+  assert.deepEqual(result.errors,[]);
+});
+
+test('screening out long model estimates does not pretend that the completed query failed',async()=>{
+  const {calls,results:[result]}=await verify({access:900,entryCount:4,modelAccess:2400});
+  assert.equal(calls.filter(call=>call.startsWith('access:')).length,1); // Protected nearest walking gate.
+  assert.equal(result.complete,true);
+  assert.ok(result.plans.every(p=>!p.qualified));
+  assert.deepEqual(result.errors,[]);
 });
 
 test('an access API failure preserves the complete local comparison and earlier results',async()=>{
@@ -397,6 +417,7 @@ test('changing an office entrance rejects prepared routes that still end at the 
   assert.ok(!result.plans.some(plan=>plan.metroMethod==='segmented'));
   assert.ok(!result.plans.some(plan=>plan.qualified));
   assert.equal(result.complete,false);
+  assert.ok(result.errors.includes('当前工区的地铁分段数据未就绪，已保留其他路线结果。'));
 });
 
 test('a POI-based office rejects coordinate-only fixed walks even when their coordinates match',async()=>{

@@ -7,6 +7,8 @@ export type Place = { id: string; name: string; address: string; location: Coord
 export type Leg = { mode: Mode; label: string; from: string; to: string; origin: Coord; destination: Coord; originPoiId?:string; destinationPoiId?:string; routingIdentity?:"coordinates"|"poi"; duration: number; rawDuration?:number; distance: number; paths: Coord[][]; instructions?: string[]; source: "amap" | "model"; measuredAt?:string; cached?:boolean; kind?:"transfer" | "full-transit" };
 export type Plan = { id: string; officeId: string; mode: Mode; title: string; duration: number; limit: number; qualified: boolean; legs: Leg[]; measuredAt: string; source: "amap" | "model"; note?: string; originalReferenceDuration?:number|null; originalReferenceScope?:string; metroMethod?:"full" | "segmented" };
 export type LocalSearch={total:number;reachable:number;withinLimit:number;bestDuration:number|null;elapsedMs:number;source:"model"};
+// `complete` means this query's selected checks finished without missing data
+// or an interrupted API call. It does not assert an exhaustive policy decision.
 export type Verification = { officeId: string; plans: Plan[]; complete: boolean; checked: number; errors: string[]; measuredAt: string; localSearch?:LocalSearch; };
 export const MODE_LABEL: Record<Mode, string> = { walking: "步行直达", bicycling: "自行车直达", metro: "地铁＋接驳" };
 export const MODE_COLOR: Record<Mode, string> = { walking: "#41896e", bicycling: "#5e83c2", metro: "#ca9857" };

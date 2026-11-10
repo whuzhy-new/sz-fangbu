@@ -131,7 +131,7 @@ export default function CommuteApp() {
       const response=await fetch("/api/verify",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({location:place.location,name:place.name,poiId:placePoiId(place),officeIds:ids}),signal:controller.signal});
       if(!response.ok){const data=await response.json() as {error?:string};throw new Error(data.error??"路线查询失败，请重试。");}
       if(!response.body)throw new Error("未取得路线结果，请重试。");
-      const reader=response.body.getReader(),decoder=new TextDecoder();let pending="";
+      const reader=response.body.getReader(),decoder=new TextDecoder();let pending="",finished=false;
       const handle=(event:any)=>{
         if(token!==requestId.current)return;
         if(event.type==="office-start"){
@@ -161,6 +161,7 @@ export default function CommuteApp() {
           setResults(previous=>({...previous,[next.officeId]:{...next,plans:next.plans.map(plan=>previous[next.officeId]?.plans.find(old=>old.id===plan.id)??plan)}}));
         }
         if(event.type==="error")setError(event.message);
+        if(event.type==="done")finished=true;
       };
       while(true){
         const {done,value}=await reader.read();if(done)break;
@@ -168,6 +169,7 @@ export default function CommuteApp() {
         for(const line of lines)if(line.trim())handle(JSON.parse(line));
       }
       pending+=decoder.decode();if(pending.trim())handle(JSON.parse(pending));
+      if(!finished&&!controller.signal.aborted&&token===requestId.current)setError("查询中断，已有结果已保留，请重试。");
     } catch(reason) {
       if((reason as Error).name!=="AbortError"&&token===requestId.current)setError(reason instanceof Error?reason.message:"查询未完成，请重试。");
     } finally {

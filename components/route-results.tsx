@@ -77,7 +77,6 @@ export default function RouteResults({result,plans,selectedPlan,loading,querySta
       })}
     </div>
     {result?.errors.map((message,index)=><p className="result-note" key={index}>{message}</p>)}
-    {!loading&&result&&!result.complete&&!best&&!result.errors.length&&<p className="result-note">已核验方案超时，其余组合为本地估算，尚不能确认不符合。</p>}
     <RouteReviewDialog plan={reviewPlan} onClose={()=>setReviewPlan(null)}/>
   </section>;
 }

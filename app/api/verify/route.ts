@@ -167,6 +167,7 @@ export async function POST(request:Request) {
                 send({type:"local-search",officeId:office.id,localSearch:result.localSearch});
               }
               if(!preparedReady){result.complete=false;result.errors.push("车站到车站的地铁方案正在重算，暂不使用旧方案判定。");}
+              else if(!candidates.length){result.complete=false;result.errors.push("当前工区的地铁分段数据未就绪，已保留其他路线结果。");}
               if(!measured&&!apiSignal.aborted){result.complete=false;result.errors.push("本地路网暂不可用，已保留高德结果。");}
               for(const {candidate,mode} of ranked.proofs) {
                 if(stopped()||apiSignal.aborted)break;
@@ -199,8 +200,11 @@ export async function POST(request:Request) {
                 }
               }
             }
-            if(!result.plans.some(p=>p.qualified))result.complete=false;
+            // Finishing the selected candidate queries is independent of
+            // finding a qualifying route. Skipped estimates are not a global
+            // proof of ineligibility; the UI reports only the checked routes.
           }
+          if(stopped())result.complete=false;
           if(apiSignal.aborted&&!stopped()&&!result.plans.some(p=>p.qualified)){result.complete=false;result.errors.push("高德核验超时，已有结果已保留。");}
           result.errors=[...new Set(result.errors)];
           result.plans.sort((a,b)=>Number(b.qualified)-Number(a.qualified)||a.duration-b.duration);
