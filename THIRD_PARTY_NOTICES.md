@@ -55,5 +55,6 @@ OSM 路网由 Geofabrik 提供的广东数据提取；来源为 [Geofabrik 广�
 
 - [Sites Vite 插件 MIT 许可](scripts/vite/sites-vite-plugin.LICENSE)：Copyright (c) 2026 OpenAI。
 - [shadcn MIT 许可](vendor/shadcn-tailwind-4.13.0.LICENSE.md)：Copyright (c) 2023 shadcn。
+- [Lucide ISC 许可与 Feather MIT 许可](vendor/lucide-react-1.31.0.LICENSE)：用于界面、地图标记和说明页图标。
 
 复制、修改或分发这些组件时，应保留对应版权与许可文本。其他依赖按其各自许可处理，本清单不替代依赖包中的完整声明。

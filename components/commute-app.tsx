@@ -1,29 +1,29 @@
 "use client";
 import {useCallback,useEffect,useRef,useState,type CSSProperties,type FocusEvent} from "react";
-import {BookOpenText,Building2,Check,ChevronDown,CircleHelp,History,Layers,LoaderCircle,MapPin,RotateCw,Search,Star,X} from "lucide-react";
+import {BookOpenText,Building2,Check,ChevronDown,ChevronRight,Circle,CircleDot,CircleHelp,History,Layers,ListOrdered,LoaderCircle,MapPin,RotateCw,Route,Search,Star,Timer,TrainFront,X} from "lucide-react";
 import AtlasMap from "./atlas-map";
 import RouteResults from "./route-results";
-import RulesDialog from "./rules-dialog";
 import AnimatedCollapse from "./animated-collapse";
 import SavedPlaces from "./saved-places";
+import ModeIcon from "./mode-icon";
 import {PREFERENCES_KEY,SAVED_PLACES_KEY,placeKey,readPreferences,readSavedPlaces,rememberPlace,toggleFavorite} from "@/lib/commute-storage";
 import {assessMapPick} from "@/lib/coverage";
 import {visiblePlans} from "@/lib/plan-results";
-import {amapPoiId,placePoiId,MODE_LABEL,QUERY_STAGE_LABEL,withinShenzhen,type Coord,type Mode,type Office,type Place,type Plan,type QueryStage,type Verification} from "@/lib/commute";
-import type {Coverage,RailData,Validation} from "@/lib/map-types";
+import {amapPoiId,placePoiId,LIMITS,MODE_LABEL,QUERY_STAGE_LABEL,ROUND_UP_SECONDS,withinShenzhen,type Coord,type Mode,type Office,type Place,type Plan,type QueryStage,type Verification} from "@/lib/commute";
+import type {Coverage,RailData} from "@/lib/map-types";
 
 const modes:Mode[]=["walking","bicycling","metro"];
 const officeNames:Record<string,string>={innovation:"深圳湾",jinghu:"景湖",prince:"太子"};
 const officeOrder=Object.keys(officeNames);
 const OFFICE_SELECTED_KEY="shenzhen-housing-map:office-selected";
-const panelTools=[{id:"office",label:"工区",icon:Building2},{id:"layers",label:"图层",icon:Layers},{id:"history",label:"历史",icon:History},{id:"rules",label:"规则",icon:CircleHelp},{id:"guide",label:"说明",icon:BookOpenText}] as const;
+const panelTools=[{id:"office",label:"工区",icon:Building2},{id:"layers",label:"图层",icon:Layers},{id:"history",label:"历史",icon:History},{id:"rules",label:"规则",icon:CircleHelp},{id:"guide",label:"指南",icon:BookOpenText}] as const;
 type PanelTool=typeof panelTools[number]["id"];
 
 export default function CommuteApp() {
   const [offices,setOffices]=useState<Office[]>([]);
   const [activeId,setActiveId]=useState("innovation");
   const [layers,setLayers]=useState<Record<Mode,boolean>>({walking:true,bicycling:true,metro:true});
-  const [coverage,setCoverage]=useState<Coverage|null>(null),[rail,setRail]=useState<RailData|null>(null),[validation,setValidation]=useState<Validation|null>(null);
+  const [coverage,setCoverage]=useState<Coverage|null>(null);
   const [query,setQuery]=useState(""),[places,setPlaces]=useState<Place[]>([]);
   const [searching,setSearching]=useState(false),[searchOpen,setSearchOpen]=useState(false),[searchError,setSearchError]=useState(""),[option,setOption]=useState(-1);
   const [searchRequest,setSearchRequest]=useState<{query:string}|null>(null);
@@ -34,7 +34,7 @@ export default function CommuteApp() {
   const [loading,setLoading]=useState(false),[currentOffice,setCurrentOffice]=useState(""),[queryStopped,setQueryStopped]=useState(false);
   const [queryStage,setQueryStage]=useState<QueryStage>("surface");
   const [selectedPlan,setSelectedPlan]=useState<Plan|null>(null),[error,setError]=useState("");
-  const [info,setInfo]=useState(false),[mobileOpen,setMobileOpen]=useState(true),[mobileHeight,setMobileHeight]=useState(0);
+  const [mobileOpen,setMobileOpen]=useState(true),[mobileHeight,setMobileHeight]=useState(0);
   const [isMobile,setIsMobile]=useState(false);
   const [needsOffice,setNeedsOffice]=useState(false);
   const [storageReady,setStorageReady]=useState(false),[storageError,setStorageError]=useState("");
@@ -86,11 +86,10 @@ export default function CommuteApp() {
     Promise.all([
       fetch("/api/config",{signal:controller.signal}).then(response=>response.json()),
       fetch("/data/coverage.json",{signal:controller.signal}).then(response=>response.ok?response.json():null),
-      fetch("/data/metro-plans.json",{signal:controller.signal}).then(response=>response.ok?response.json():null),
-      fetch("/data/validation.json",{signal:controller.signal}).then(response=>response.ok?response.json():null)
-    ]).then(([config,cov,metro,val])=>{
+      fetch("/data/metro-plans.json",{signal:controller.signal}).then(response=>response.ok?response.json():null)
+    ]).then(([config,cov,metro])=>{
       setOffices((config as {offices:Office[]}).offices??[]);
-      setCoverage(cov as Coverage|null);setRail(metro as RailData|null);railRef.current=metro as RailData|null;setValidation(val as Validation|null);
+      setCoverage(cov as Coverage|null);railRef.current=metro as RailData|null;
     }).catch(reason=>{if(reason.name!=="AbortError")setError("数据未能加载，请刷新重试。");});
     return()=>{controller.abort();abort.current?.abort();};
   },[]);
@@ -250,10 +249,14 @@ export default function CommuteApp() {
   const closeSearchLists=(event:FocusEvent<HTMLElement>)=>{if(!event.currentTarget.contains(event.relatedTarget))setSearchOpen(false);};
   const officeField=(<fieldset className="office-section"><legend className="field-label">{isMobile&&needsOffice?"选择办公工区":"办公工区"}</legend>
             <div className="office-cards">
-              {[...offices].sort((a,b)=>officeOrder.indexOf(a.id)-officeOrder.indexOf(b.id)).map(office=><label className="office-choice" key={office.id}>
-                <input type="radio" name="office" aria-label={office.name} checked={!(isMobile&&needsOffice)&&activeId===office.id} onChange={()=>switchOffice(office.id)}/>
-                <span className="office-radio" aria-hidden="true"><span/></span><span className="office-choice-name">{officeNames[office.id]??office.name}</span>
-              </label>)}
+              {[...offices].sort((a,b)=>officeOrder.indexOf(a.id)-officeOrder.indexOf(b.id)).map(office=>{
+                const checked=!(isMobile&&needsOffice)&&activeId===office.id;
+                const Indicator=checked?CircleDot:Circle;
+                return <label className="office-choice" key={office.id}>
+                  <input type="radio" name="office" aria-label={office.name} checked={checked} onChange={()=>switchOffice(office.id)}/>
+                  <Indicator size={14} strokeWidth={1.7} aria-hidden="true"/><span className="office-choice-name">{officeNames[office.id]??office.name}</span>
+                </label>;
+              })}
               {!offices.length&&<span className="office-placeholder" role="status">加载工区…</span>}
             </div>
           </fieldset>);
@@ -307,8 +310,25 @@ export default function CommuteApp() {
     {contentTool==="office"&&officeField}
     {contentTool==="layers"&&layerField}
     {contentTool==="history"&&<SavedPlaces recent={recentPlaces} favorites={favorites} view={savedView} onView={setSavedView} onChoose={choose} onFavorite={point=>setFavorites(previous=>toggleFavorite(previous,point))} onClearRecent={()=>setRecentPlaces([])}/>}
-    {contentTool==="rules"&&<div className="tool-rules"><div className="tool-limits">{modes.map(mode=><div key={mode}><span>{mode==="walking"?"步行":mode==="bicycling"?"自行车":"地铁"}</span><strong>{mode==="walking"?30:20}<small>分内</small></strong></div>)}</div><p>任一方式满足时限，且每月租住至少 16 个工作日。</p><p>不足 30 秒舍去，30 秒及以上进一分；每段至少 1 分钟，先取整再相加，计入站内换乘。</p><button className="text-button" onClick={()=>setInfo(true)}>规则与数据详情</button></div>}
-    {contentTool==="guide"&&<div className="tool-guide"><ol><li>选择办公工区和范围图层。</li><li>输入小区或地址，按 Enter 搜索；也可在地图选点后确认。</li><li>查看路线，点击「上高德看路线」核对。</li></ol><a className="text-button guide-entry" href="/guide.html" target="_blank" rel="noopener noreferrer">完整使用说明</a></div>}
+    {contentTool==="rules"&&<div className="tool-rules">
+      <div className="tool-limits">{modes.map(mode=><div className={mode} key={mode}><span><ModeIcon mode={mode} size={14}/>{mode==="walking"?"步行":mode==="bicycling"?"自行车":"地铁"}</span><strong>{LIMITS[mode]/60}<small>分内</small></strong></div>)}</div>
+      <ul className="tool-rule-list">
+        <li><MapPin size={15} aria-hidden="true"/><div><h3>起终点</h3><p>小区门口 → 办公地点</p></div></li>
+        <li><ListOrdered size={15} aria-hidden="true"/><div><h3>查询顺序</h3><p>步行／骑行 → 完整地铁 → 分段地铁</p><p>满足时限即停止查询</p></div></li>
+        <li><TrainFront size={15} aria-hidden="true"/><div><h3>完整地铁</h3><p>取高德完整路线的总时长</p></div></li>
+        <li><Route size={15} aria-hidden="true"/><div><h3>分段地铁</h3><p>进站接驳＋地铁＋出站接驳</p><p>接驳可步行或骑行</p><p>地铁段只计乘车和站内换乘</p></div></li>
+        <li><Timer size={15} aria-hidden="true"/><div><h3>时长取整</h3><p>满 {ROUND_UP_SECONDS} 秒进 1 分，不足则舍去</p><p>每段至少 1 分，先取整再相加</p></div></li>
+      </ul>
+    </div>}
+    {contentTool==="guide"&&<div className="tool-guide">
+      <ol className="guide-steps" role="list">
+        <li><button type="button" className="guide-step guide-step-link" aria-controls="query-tool-content" onClick={()=>{toggleTool("office");document.getElementById("query-tool-office")?.focus({preventScroll:true});}}><span className="guide-step-number" aria-hidden="true">1</span><strong>选择工区</strong><ChevronRight size={15} aria-hidden="true"/></button></li>
+        <li className="guide-step"><span className="guide-step-number" aria-hidden="true">2</span><div><h3>查地点</h3><p>输入小区名或地址，按 Enter 搜索。</p><p>也可在地图上选小区门口，再点「确认地点」。</p></div></li>
+        <li className="guide-step"><span className="guide-step-number" aria-hidden="true">3</span><div><h3>看方案</h3><p>先看是否符合时限，再看通勤用时。</p><p>展开分段地铁方案，查看各段用时。</p></div></li>
+        <li className="guide-step"><span className="guide-step-number" aria-hidden="true">4</span><div><h3>上高德截图</h3><p>点「上高德看路线」。</p><p>手机直接打开高德，电脑用手机扫码。</p><p>核对路线后截图，分段方案每段各截一张。</p></div></li>
+      </ol>
+      <div className="guide-links"><a href="/guide.html" target="_blank" rel="noopener noreferrer">图文指南</a><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">© OpenStreetMap contributors / ODbL</a></div>
+    </div>}
   </div></AnimatedCollapse>);
   function toggleMobilePanel(){
     if(mobileOpen){setSearchOpen(false);setActiveTool(null);searchInput.current?.blur();}
@@ -316,7 +336,7 @@ export default function CommuteApp() {
   }
   const hasBody=!!(expandedTool||showOptions||(showAnalysis&&home)||storageError||error||(loading&&!activeLoading));
   const queryHeader=(<div className="query-header">
-    <h1 className="search-panel-title"><MapPin size={19} aria-hidden="true"/><span>深圳房补地图</span><span className="brand-badge">ByteDance</span></h1>
+    <h1 className="search-panel-title"><MapPin size={19} aria-hidden="true"/><span>深圳房补地图</span><span className="brand-signature"><span>for</span><span className="brand-badge">Bytedancers</span></span></h1>
     <div className={isMobile?"mobile-panel-header":"search-section"}>
       <label className="sr-only" htmlFor="place-query">居住地点</label>
       {searchField}
@@ -342,6 +362,5 @@ export default function CommuteApp() {
       </div>
       <AtlasMap offices={offices} activeId={activeId} showAll={false} layers={layers} coverage={coverage} home={home} plan={selectedPlan} pendingLocation={pendingLocation} pendingName={pendingName} onPick={pick} onConfirmPick={confirmPick} onCancelPick={()=>{setPendingLocation(null);setPendingName("");setMobileOpen(true);}} mobileOpen={mobileOpen}/>
     </div>
-    <RulesDialog open={info} onClose={()=>setInfo(false)} coverage={coverage} rail={rail} validation={validation}/>
   </main>;
 }

@@ -1,6 +1,6 @@
 "use client";
 import {useId,useState} from "react";
-import {Camera,ChevronDown,LoaderCircle,ScanLine,type LucideIcon} from "lucide-react";
+import {Camera,ChevronDown,LoaderCircle,ScanLine,TriangleAlert,type LucideIcon} from "lucide-react";
 import type {AmapPlatform} from "@/lib/commute";
 import AnimatedCollapse from "./animated-collapse";
 
@@ -29,10 +29,11 @@ function ScanMethod({title,description,icon:Icon,guide}:{title:string;descriptio
 }
 
 export default function ScanGuide({platform}:{platform:AmapPlatform}) {
-  return <div className="review-scan-methods" role="group" aria-label="支持的扫码方式">
+  return <div className="review-scan-methods" role="group" aria-label="扫码方式">
     <ScanMethod key={platform} title="系统工具" description="相机、二维码扫描器" icon={Camera}
       guide={platform==="ios"?{kind:"system",path:"控制中心 → 二维码扫描器",image:"/images/system-scan-entry.png",alt:"iPhone 控制中心，专注模式下方一行的第三个按钮为二维码扫描器，图中已圈出"}:undefined}/>
     <ScanMethod title="高德 App" description="扫一扫" icon={ScanLine}
       guide={{kind:"amap",path:"右上角 ＋ → 扫一扫",image:"/images/amap-scan-entry.png",alt:"高德首页右上角加号展开菜单，第三项为扫一扫；图中标出了加号和扫一扫"}}/>
+    <div className="review-scan-method review-scan-warning"><TriangleAlert size={17} aria-hidden="true"/><strong>微信扫码无法打开</strong></div>
   </div>;
 }

@@ -1,7 +1,7 @@
 "use client";
 import {useState} from "react";
-import {ArrowRight,Check,ChevronDown,CircleHelp,ExternalLink,LoaderCircle} from "lucide-react";
-import {formatDuration,QUERY_STAGE_LABEL,type Plan,type QueryStage,type Verification} from "@/lib/commute";
+import {ArrowRight,Check,ChevronDown,CircleHelp,ExternalLink,Info,LoaderCircle} from "lucide-react";
+import {formatDuration,QUERY_STAGE_LABEL,roundDuration,type Plan,type QueryStage,type Verification} from "@/lib/commute";
 import ModeIcon from "./mode-icon";
 import AnimatedCollapse from "./animated-collapse";
 import RouteReviewDialog from "./route-review-dialog";
@@ -46,6 +46,8 @@ export default function RouteResults({result,plans,selectedPlan,loading,querySta
         const selected=selectedPlan?.id===plan.id;
         const open=expandable&&selected;
         const detailsId=`route-${plan.id}`;
+        const displayedDuration=roundDuration(plan.duration);
+        const showCalculationNote=plan.metroMethod==="segmented"&&plan.source==="amap"&&displayedDuration>=18*60&&displayedDuration<=20*60;
         return <article className={`route-card ${open?"active":""} ${!plan.qualified?"is-over-limit":""}`} key={plan.id}>
           <div className={`route-card-heading ${!expandable?"surface-route":""}`}>
           <button className="route-card-main" aria-expanded={expandable?open:undefined} aria-controls={expandable?detailsId:undefined} aria-pressed={!expandable?selected:undefined} onClick={()=>onSelect(plan)}>
@@ -69,7 +71,10 @@ export default function RouteResults({result,plans,selectedPlan,loading,querySta
                 </li>;
               })}
             </ol>
-            {plan.legs.length>1&&<div className="calculation" aria-label="分段时长相加">{plan.legs.map(l=>formatDuration(l.duration)).join(" + ")}<span>= {formatDuration(plan.duration)}</span></div>}
+            {plan.legs.length>1&&<div className="calculation">
+              <div className="calculation-sum" aria-label="分段时长相加">{plan.legs.map(l=>formatDuration(l.duration)).join(" + ")}<span>= {formatDuration(plan.duration)}</span></div>
+              {showCalculationNote&&<p className="calculation-note"><Info size={13} aria-hidden="true"/><span>高德 API 和 App 的用时可能不同。地铁按 9:00 查询，可在 App 将出发时间设为 9:00 再核对。接驳段也可换成步行或自行车，看看是否更快。</span></p>}
+            </div>}
             <RouteSource plan={plan} onReview={()=>setReviewPlan(plan)}/>
           </div>
           </AnimatedCollapse>}

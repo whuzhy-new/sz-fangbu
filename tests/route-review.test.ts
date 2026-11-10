@@ -1,12 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {reviewRoutes} from '../lib/route-review.ts';
+import {detectAmapPlatform,reviewRoutes} from '../lib/route-review.ts';
 import type {Coord,Leg,Plan} from '../lib/commute.ts';
 
 const a:Coord=[113.92,22.51],b:Coord=[113.94,22.53],c:Coord=[113.95,22.54];
 const leg=(mode:Leg['mode'],from:string,to:string,duration:number,origin=a,destination=b):Leg=>({mode,from,to,duration,origin,destination,label:mode,distance:100,paths:[],source:'amap'});
 const rail=(from:string,to:string,duration:number,origin=a,destination=b):Leg=>({...leg('metro',from,to,duration,origin,destination),originPoiId:`poi-${from}`,destinationPoiId:`poi-${to}`});
 const plan=(legs:Leg[],metroMethod:Plan['metroMethod']='segmented'):Plan=>({id:'test',officeId:'innovation',mode:'metro',title:'测试方案',duration:1200,limit:1200,qualified:true,legs,measuredAt:'2026-11-09',source:'amap',metroMethod});
+
+test('detects Android and Apple mobile devices for native map links',()=>{
+  assert.equal(detectAmapPlatform({userAgent:'Mozilla/5.0 (Linux; Android 15; Pixel 9)'}),'android');
+  assert.equal(detectAmapPlatform({userAgent:'Mozilla/5.0',userAgentData:{platform:'Android'}}),'android');
+  assert.equal(detectAmapPlatform({userAgent:'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)'}),'ios');
+});
+
+test('iPad desktop mode is detected without treating a Mac as a mobile device',()=>{
+  const desktop={userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15)',platform:'MacIntel'};
+  assert.equal(detectAmapPlatform({...desktop,maxTouchPoints:5}),'ios');
+  assert.equal(detectAmapPlatform({...desktop,maxTouchPoints:0}),null);
+  assert.equal(detectAmapPlatform({userAgent:'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',platform:'Win32',maxTouchPoints:10}),null);
+});
 
 test('segmented review provides three QR URLs with the correct travel modes and endpoints',()=>{
   const routes=reviewRoutes(plan([leg('walking','小区','南油地铁站A口',120),rail('南油站','粤海门站',600),leg('bicycling','粤海门E口','工区',180)]));
