@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {assessCoverage,assessMapPick,coverageFeatures,firstQueryStage,COVERAGE_EDGE_METERS} from "../lib/coverage.ts";
+import {assessCoverage,assessCoverageDetails,assessMapPick,coverageFeatures,firstQueryStage,COVERAGE_EDGE_METERS} from "../lib/coverage.ts";
 import type {Coord,Mode} from "../lib/commute.ts";
 import {DURATION_ROUNDING_VERSION} from "../lib/commute.ts";
 import type {Coverage,CoverageGeometry} from "../lib/map-types.ts";
@@ -104,6 +104,9 @@ test("a solid interior in another mode prevents a false union-edge warning",()=>
   const coverage=fixture({type:"Polygon",coordinates:[square(113.9,22.5,.02)]});
   coverage.features[0].geometry={type:"Polygon",coordinates:[square(113.89,22.49,.04)]};
   assert.equal(assessCoverage(coverage,"test",[113.9,22.51],COVERAGE_EDGE_METERS).status,"inside");
+  assert.deepEqual(assessCoverageDetails(coverage,"test",[113.9,22.51],COVERAGE_EDGE_METERS),{
+    status:"inside",modes,interiorModes:["walking"],
+  });
 });
 
 test("map confirmation allows the layer union and exactly 500 metres outside",()=>{

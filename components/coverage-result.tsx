@@ -11,9 +11,11 @@ export default function CoverageResult({assessment,compact=false,blocked=false}:
   const Heading=compact?"strong":"h2";
   return <section className={`coverage-result ${compact?"compact":"results-section"}`} aria-label="范围判断结果">
     <div className={`result-status ${inside?"pass":edge?"edge":""}`} role="status" aria-live="polite">
-      {inside?<Check size={16} aria-hidden="true"/>:<CircleHelp size={16} aria-hidden="true"/>}
-      <Heading className="coverage-status-label">{status}</Heading>{!edge&&!blocked&&<span className="result-method">范围估算</span>}
+      <div className="coverage-summary">
+        {inside?<Check size={16} aria-hidden="true"/>:<CircleHelp size={16} aria-hidden="true"/>}
+        <Heading className="coverage-status-label">{status}</Heading>{!edge&&!blocked&&<span className="result-method">范围估算</span>}
+      </div>
+      {inside&&assessment.modes.length>0&&<div className="coverage-matches">{assessment.modes.map(mode=><span key={mode} className={`coverage-match ${mode}`}>{labels[mode]}</span>)}</div>}
     </div>
-    {inside&&assessment.modes.length>0&&<div className="coverage-matches">{assessment.modes.map(mode=><span key={mode} className={`coverage-match ${mode}`}>{labels[mode]}</span>)}</div>}
   </section>;
 }

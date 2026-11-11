@@ -89,21 +89,28 @@ export function assessMapPick(coverage:Coverage|null,officeId:string,point:Coord
 }
 
 export function assessCoverage(coverage:Coverage|null,officeId:string,point:Coord,edgeMeters=0):CoverageAssessment {
-  if(!point.every(Number.isFinite))return {status:"unavailable",modes:[]};
+  const {status,modes}=assessCoverageDetails(coverage,officeId,point,edgeMeters);
+  return {status,modes};
+}
+
+export function assessCoverageDetails(coverage:Coverage|null,officeId:string,point:Coord,edgeMeters=0):CoverageAssessment&{interiorModes:Mode[]} {
+  if(!point.every(Number.isFinite))return {status:"unavailable",modes:[],interiorModes:[]};
   const features=coverageFeatures(coverage).filter(feature=>feature.properties.officeId===officeId);
-  const matched=modes.filter(mode=>features.some(feature=>feature.properties.mode===mode&&geometryCovers(point,feature.geometry)));
-  if(Number.isFinite(edgeMeters)&&edgeMeters>0) {
-    let nearBoundary=false,safelyInside=false;
-    for(const feature of features) {
-      const distance=boundaryDistanceMeters(point,feature.geometry);
-      if(distance<=edgeMeters)nearBoundary=true;
-      else if(geometryCovers(point,feature.geometry))safelyInside=true;
-    }
-    // A secure interior in any mode is enough. Otherwise, both sides of the
-    // feathered contour (including hole boundaries) need route verification.
-    if(nearBoundary&&!safelyInside)return {status:"edge",modes:matched};
+  const checkEdge=Number.isFinite(edgeMeters)&&edgeMeters>0;
+  const covered=new Set<Mode>(),interior=new Set<Mode>();
+  let nearBoundary=false;
+  for(const {geometry,properties:{mode}} of features){
+    const contains=geometryCovers(point,geometry);
+    if(contains)covered.add(mode);
+    if(!checkEdge)continue;
+    if(boundaryDistanceMeters(point,geometry)<=edgeMeters)nearBoundary=true;
+    else if(contains)interior.add(mode);
   }
-  if(matched.length)return {status:"inside",modes:matched};
-  if(!coverage?.metadata.complete||modes.some(mode=>!features.some(feature=>feature.properties.mode===mode)))return {status:"unavailable",modes:[]};
-  return {status:"outside",modes:[]};
+  const matched=modes.filter(mode=>covered.has(mode));
+  const interiorModes=checkEdge?modes.filter(mode=>interior.has(mode)):matched;
+  // A secure interior in any mode is enough to clear the union's edge warning.
+  if(nearBoundary&&!interiorModes.length)return {status:"edge",modes:matched,interiorModes};
+  if(matched.length)return {status:"inside",modes:matched,interiorModes};
+  if(!coverage?.metadata.complete||modes.some(mode=>!features.some(feature=>feature.properties.mode===mode)))return {status:"unavailable",modes:[],interiorModes};
+  return {status:"outside",modes:[],interiorModes};
 }

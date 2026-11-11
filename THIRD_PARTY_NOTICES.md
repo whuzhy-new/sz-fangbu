@@ -11,6 +11,7 @@
 | shadcn 相关组件及样式 | 保留上游 MIT 许可，见 `vendor/shadcn-tailwind-4.13.0.LICENSE.md` |
 | npm 依赖 | 适用各依赖自身的许可；版本见 `package-lock.json`，许可原文见依赖发行包中的声明 |
 | `public/data/road-network/` | 含 OSM 衍生路网及高德样本校准参数；OSM 部分适用 ODbL，其他来源权利需分别处理 |
+| `public/data/metro-tracks.json` | 高德线路查询返回的深圳地铁轨迹 |
 | `public/data/` 中的其他数据文件 | 含高德地点、车站、路线、时长、校准样本，以及结合 OSM 生成的范围；不作为统一适用代码许可的数据集发布 |
 | `data/metro-index.json`、`data/office-profiles/`、`data/duration-policy-report.json` | 含第三方地点信息、固定方案或数据生成报告；须按实际内容遵守对应来源条款 |
 | `data/snapshots/` | 历史数据的打包归档，沿用其内容对应的来源与许可边界 |

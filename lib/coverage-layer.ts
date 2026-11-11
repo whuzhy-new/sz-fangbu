@@ -1,10 +1,16 @@
 import {MODE_COLOR,type Coord,type Mode} from "./commute";
 import type {Coverage} from "./map-types";
 import {COVERAGE_FEATHER_METERS} from "./coverage";
+import {METRO_LINE_COLORS} from "./metro-line-colors";
+import metroTracks from "@/public/data/metro-tracks.json";
 
 type Point={x:number;y:number};
 type Polygon=Coord[][];
 const modes:Mode[]=["walking","bicycling","metro"];
+const railLines=metroTracks.lines.map(line=>({
+  color:METRO_LINE_COLORS[line.name.split("／")[0]],
+  paths:line.paths as Coord[][],
+}));
 
 // Round only the displayed contour. The source coordinates and route checks stay intact.
 function traceRing(ctx:CanvasRenderingContext2D,points:Point[],radius:number){
@@ -60,11 +66,31 @@ export function createCoverageLayer(map:any,AMap:any){
         }
         source.fill("evenodd"); // Preserve interior holes and disconnected polygons.
       }
-      ctx.globalAlpha=showAll?0.13:0.18;
+      ctx.globalAlpha=showAll?0.10:0.14;
       ctx.filter=`blur(${feather*dpr}px)`;
       ctx.drawImage(mask,-pad*dpr,-pad*dpr);
     }
     ctx.globalAlpha=1;ctx.filter="none";
+    ctx.save();
+    ctx.setTransform(dpr,0,0,dpr,0,0);
+    ctx.globalAlpha=.52;
+    ctx.lineWidth=1.75;
+    ctx.lineJoin="round";
+    ctx.lineCap="round";
+    for(const {color,paths} of railLines){
+      ctx.beginPath();
+      for(const path of paths){
+        const start=map.lngLatToContainer(path[0]) as Point;
+        ctx.moveTo(start.x,start.y);
+        for(let i=1;i<path.length;i++){
+          const point=map.lngLatToContainer(path[i]) as Point;
+          ctx.lineTo(point.x,point.y);
+        }
+      }
+      ctx.strokeStyle=color;
+      ctx.stroke();
+    }
+    ctx.restore();
   };
   // AMap keeps this canvas aligned while panning/zooming; unchanged views skip repainting.
   const layer=new AMap.CustomLayer(canvas,{zIndex:20,zooms:[10,19],alwaysRender:true,render});
